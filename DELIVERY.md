@@ -156,3 +156,93 @@ and commands for a disposable full-result copy.
 - Trust assumes controlled image selection, Slurm account, event store and
   import-order writers. Reports are integrity bindings, not signed attestations
   against malicious same-account workflows; see [the trust boundary](docs/architecture.md).
+
+## Reviewer assessment — 2026-09-09
+
+### Conclusion
+
+The implementation matches the requested architecture and is a suitable
+prototype for cluster acceptance testing. The helper is a standalone,
+filesystem-only CPU workload; it reuses the same normalization implementation
+as the importer, runs before result archiving, transfers trusted receipts
+through the existing event-sourced workflow, and leaves the established local
+shallow path unchanged when the administrator flag is absent or false.
+
+No code-review finding requires redesigning that architecture. The remote flag
+should nevertheless remain disabled for normal use until the cluster gates
+below have passed. The 809 passing tests and Docker smoke establish local
+correctness, not real Slurm, filesystem, transfer, or OMERO acceptance.
+
+### What is aligned with the intended design
+
+- The helper has no OMERO session, database connection, GPU requirement, or
+  access to canonical image storage. It receives a portable canonical identity
+  snapshot and operates only on returned workflow output.
+- NGFF discovery, identity comparison, normalization, transaction recovery,
+  and receipt validation have one shared implementation. The importer keeps
+  only its OMERO-specific adapter and registration responsibilities.
+- Normalization occurs before ZIP creation. Successful remote normalization can
+  therefore reduce archive creation, transfer, extraction, and local
+  normalization work instead of merely relocating the last importer step.
+- The transaction journal uses same-filesystem moves, records intent before
+  mutation, rolls back an interrupted pre-commit operation, and finishes cleanup
+  after a committed operation. The original result is preserved when safe
+  recovery cannot be proven.
+- Submission intent and Slurm job adoption are durable outside the archived
+  output. The event task records the helper image, task, job, and validated batch
+  report without changing user-facing workflow progress.
+- The importer validates the canonical snapshot, image and tool version, report
+  checksum, task/job provenance, shallow manifest, canonical references, and
+  retained label structure without performing a second full pixel hash.
+- Compatibility defaults are correct: the feature is administrator-controlled,
+  defaults to false, supports only the existing `keep-full` policy, and retains
+  ZIP and local importer shallowing as the fallback path.
+
+### Review observations
+
+1. The configured image currently names an unpublished tag, while the delivered
+   artifact is only a local Docker image. This is expected for the prototype but
+   means the feature cannot yet be enabled on the cluster from the documented
+   default. Publish an immutable registry image (preferably referenced by
+   digest), or deliberately stage a test SIF, before cluster testing.
+2. The schema version is still `0.2.1.dev1` and the related repositories use
+   local feature commits. Coordinated release versions are required; the helper,
+   BIOMERO core, scripts, importer, schema, and deployment configuration form one
+   compatibility unit.
+3. The worker count defaults to one for conservative portability. The existing
+   development-host benchmark found four identity workers fastest. Use four as
+   an explicit benchmark setting on this cluster, while retaining a conservative
+   product default until remote CPU/filesystem scaling is measured.
+4. A failed normalization job deliberately does not silently archive potentially
+   mixed output. BIOMERO runs the recovery job and pauses retrieval if recovery
+   is unresolved. This is the correct data-safety choice, but its operator logs
+   and restart behavior must be exercised on the real scheduler before rollout.
+5. The first contract intentionally supports NGFF 0.4/Zarr v2 Image and Plate
+   output only. Unsupported or ineligible output remains full. Acceptance should
+   confirm that mixed workflow outputs and renamed returned stores follow that
+   fallback without losing ordinary files.
+
+### Remaining acceptance gates
+
+1. Build or stage the exact helper as a SIF and run `health` plus a small writable
+   fixture through the real Slurm `sbatch` and Apptainer/Singularity path. Confirm
+   CPU allocation, runtime discovery, bind mounts, UID/GID permissions, logs,
+   and image reuse.
+2. On disposable data, interrupt and resume once during submission/polling and
+   once during normalization. Verify job adoption, journal recovery, event order,
+   and that no duplicate normalizer job mutates the same store.
+3. Normalize a disposable copy of the retained 846-image result with four
+   workers. Record identity time, normalization time, retained bytes, archive
+   time/size, transfer, extraction, and receipt validation. Do not mutate the
+   retained baseline or canonical storage.
+4. Verify the complete scientific result before enabling the feature: all 846
+   images, four labels per image, exact canonical references, retained new or
+   changed labels, expected hierarchy and names, and successful OMERO
+   registration.
+5. Run one full detached workflow with remote shallowing enabled and compare it
+   to the local-shallow control recorded in `POTENTIAL_UPGRADES.md`.
+
+Heavy cluster benchmarking is intentionally deferred while the September 9
+local-shallow control workflow is running, so its timing is not contaminated.
+A read-only/runtime health smoke is safe, but no full-result normalization
+should share the cluster or storage path with that control measurement.
