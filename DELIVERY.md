@@ -246,3 +246,12 @@ Heavy cluster benchmarking is intentionally deferred while the September 9
 local-shallow control workflow is running, so its timing is not contaminated.
 A read-only/runtime health smoke is safe, but no full-result normalization
 should share the cluster or storage path with that control measurement.
+
+### Passive cluster prerequisite check
+
+A read-only check against the running demonstration cluster found Apptainer
+1.4.5 and available non-GPU nodes in the default `normal` partition. The local
+`biomero-shallower:0.1.0` image still matches the delivered image ID and size and
+runs as `10001:10001`. No image was transferred, no SIF was built, and no Slurm
+job was submitted during this check. These observations reduce setup uncertainty
+but do not satisfy the first acceptance gate.
