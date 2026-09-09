@@ -203,6 +203,23 @@ to decide whether returned arrays are safe to reference.
 
 ## Current control run
 
-A second local-shallow control began on September 9, 2026 at 16:59 with workflow
-`1d531791-ec97-4d9a-b5c1-2f53d325e275`. Its measured stages and outcome will be
-added after completion.
+A second local-shallow control began on September 9, 2026 with workflow
+`1d531791-ec97-4d9a-b5c1-2f53d325e275`. Remote shallowing was disabled. Detached
+execution, local shallow Zarr, pruned result discovery, adaptive 24-hour importer
+polling, and the importer keepalive changes were active in the running containers.
+
+Times below are UTC, matching BIOMERO and Slurm logs.
+
+| Stage | Start | End | Duration | Result |
+|---|---:|---:|---:|---|
+| Launcher created | 16:59:35.122 | | | Detached handoff succeeded. |
+| Cached canonical discovery | 17:00:22.508 | 17:00:22.875 | 0.367s | Found all 846 cached image identities; no cold hash. |
+| Direct input ZIP | 17:00:22.957 | 17:38:59.608 | 38m 36.8s | 6,465,013,963-byte ZIP; baseline was 39m 47.5s. |
+| Input SCP | 17:38:59.628 | 17:40:40.497 | 1m 40.9s | Baseline was 1m 51.8s. |
+| Remote unpack and no-op conversion | 17:40:40.498 | 17:41:34.706 | 54.2s | Input was already Zarr. |
+| Slurm analysis job 575 | 17:41:37 | running | | `cisegmentation`, GPU partition. |
+
+At analysis start, the event-sourced launcher aggregate had advanced from
+`INITIALIZING` through `_SLURM_Image_Transfer.py` (`TRANSFERRING`, 5%) to
+`cisegmentation` (`JOB_RUNNING`, 50%). The launcher task's mechanical `CLAIMED`
+status remained separate and did not overwrite analysis progress.
