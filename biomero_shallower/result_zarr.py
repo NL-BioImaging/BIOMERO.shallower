@@ -848,7 +848,9 @@ def find_returned_zarr_stores(results_path: str | Path) -> tuple[Path, ...]:
     for current, dirs, _files in os.walk(base):
         zarr_dirs = sorted(name for name in dirs if name.lower().endswith(".zarr"))
         stores.extend(Path(current) / name for name in zarr_dirs)
-        dirs[:] = [name for name in dirs if not name.lower().endswith(".zarr")]
+        dirs[:] = [name for name in dirs
+                   if not name.lower().endswith(".zarr")
+                   and ".biomero-prune-" not in name]
     return tuple(stores)
 
 

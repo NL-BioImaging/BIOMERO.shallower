@@ -11,11 +11,9 @@ from biomero_schema.shallower import SHALLOW_OPERATION_REPORT, ShallowOperationR
 from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST, ShallowCollection
 
 from . import __version__
+from .adapters import ADAPTERS
 from .pixel_identity import pixel_identities_match
-from .result_zarr import evaluate_returned_zarr, normalize_returned_zarr
 from .transaction import recover, write_json
-
-ADAPTERS = {1: "ngff-0.4-zarr-v2"}
 
 
 @contextmanager
@@ -102,6 +100,7 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
               identity_provider=None, measure_bytes=False):
     if contract not in ADAPTERS:
         raise ValueError(f"Unknown contract version: {contract}")
+    adapter = ADAPTERS[contract]
     if failure_policy != "keep-full":
         raise ValueError("Unknown failure policy")
     root = Path(root).absolute()
@@ -121,14 +120,14 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
                 if any((Path(directory) / name).is_symlink() for name in dirs + names):
                     raise ValueError("Returned Zarr contains a symlink")
         started = time.monotonic()
-        decision = evaluate_returned_zarr(root, manifest,
-                                         identity_workers=identity_workers,
-                                         identity_provider=identity_provider)
+        decision = adapter.evaluate(root, manifest,
+                                    identity_workers=identity_workers,
+                                    identity_provider=identity_provider)
         if decision.eligible:
             source = decision.matched_inputs[0]
             profile = (source.plate_source.interchange_profile if source.plate_source
                        else source.source.interchange_profile)
-            if profile != ADAPTERS[contract]:
+            if profile != adapter.profile:
                 decision = replace(decision, outcome="keep-full",
                                    reason="unsupported-canonical-profile")
         evaluated = time.monotonic()
@@ -136,7 +135,7 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
         def report_for(collection=None, reason=None):
             return ShallowOperationReport(
                 schema=1, toolVersion=__version__, image=image,
-                inputContract=1, outputContract=1, adapter=ADAPTERS[contract],
+                inputContract=1, outputContract=contract, adapter=adapter.profile,
                 canonicalInputs=manifest, artifact=root.name,
                 decision=decision.outcome, reason=reason or decision.reason,
                 result="normalized" if collection else (
@@ -155,7 +154,7 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
                 write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
                 validate_report(root, manifest, image=image, tool_version=__version__)
             try:
-                normalized = normalize_returned_zarr(
+                normalized = adapter.normalize(
                     decision, manifest.workflow_id,
                     before_commit=commit, measure_bytes=measure_bytes)
                 if measure_bytes:
