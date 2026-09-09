@@ -133,19 +133,26 @@ def _read_attrs(node: Path) -> dict:
 
 
 def _write_json(path: Path, value: dict) -> None:
+    from .transaction import sync_directory
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    temporary.write_text(
-        json.dumps(value, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
+    sync_directory(path.parent)
 
 
 def _write_bytes(path: Path, value: bytes) -> None:
     """Atomically restore file content used by normalization rollback."""
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    temporary.write_bytes(value)
+    from .transaction import sync_directory
+    with temporary.open("wb") as stream:
+        stream.write(value)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
+    sync_directory(path.parent)
 
 
 def load_managed_storage_roots(
@@ -1082,6 +1089,7 @@ def normalize_returned_zarr(
     try:
         rollback.mkdir()
         journal = begin(root, rollback, minimal_omitted, original_attrs)
+        sync_directory(root.parent)
         for directory in minimal_omitted:
             if not directory.is_dir():
                 raise PixelIdentityError(

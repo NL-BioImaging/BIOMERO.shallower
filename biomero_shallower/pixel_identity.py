@@ -157,10 +157,10 @@ class IsccBioIdentityProvider:
         generate = self._generate_biocode
         if generate is None:
             try:
-                generate = import_module("iscc_bio.api").biocode
+                generate = self._import_upstream().biocode
             except ImportError as exc:
                 raise PixelIdentityError(
-                    "ISCC-BIO is unavailable; install biomero-importer with "
+                    "ISCC-BIO is unavailable; install biomero-shallower with "
                     "the identity extra"
                 ) from exc
 
@@ -173,6 +173,9 @@ class IsccBioIdentityProvider:
                     "Cannot determine the installed iscc-bio version"
                 ) from exc
         return generate, tool_version
+
+    def _import_upstream(self):
+        return import_module("iscc_bio.api")
 
     def generate(
         self,

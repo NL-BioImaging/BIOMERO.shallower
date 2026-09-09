@@ -45,3 +45,22 @@ def test_non_zarr_is_kept_and_unknown_contract_rejected(tmp_path):
     with pytest.raises(ValueError, match="contract"):
         normalize(path, manifest, contract=99)
     assert path.read_text() == "a,b"
+
+
+def test_remote_plate_report_retains_labels_and_is_restart_safe(tmp_path):
+    from test_result_zarr import _make_plate, _plate_input, NodeIdentityProvider
+    root = tmp_path / 'plate.zarr'
+    _make_plate(root, {'A/1/0': ('cells',), 'B/1/0': ('cells',)})
+    manifest = _manifest(_plate_input())
+    provider = NodeIdentityProvider({
+        'A/1/0': _identity('ISCC:IA', 'A/1/0'),
+        'B/1/0': _identity('ISCC:IB', 'B/1/0'),
+        'A/1/0/labels/cells': _identity('ISCC:ILA', 'A/1/0/labels/cells', 'label'),
+        'B/1/0/labels/cells': _identity('ISCC:ILB', 'B/1/0/labels/cells', 'label'),
+    })
+    report = normalize(root, manifest, identity_provider=provider)
+    assert report.result == 'normalized'
+    assert len(report.collection.images) == 2
+    assert normalize(root, manifest, identity_provider=object()) == report
+    assert not (root / 'A/1/0/0').exists()
+    assert (root / 'A/1/0/labels/cells/0').is_dir()

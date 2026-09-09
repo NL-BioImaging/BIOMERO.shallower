@@ -6,9 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "biomero-shallower"
 version = "0.1.0"
 description = "Filesystem normalization of BIOMERO returned OME-Zarr"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = "GPL-2.0-only"
-dependencies = ["biomero-schema>=0.2,<0.3", "numpy==2.5.3"]
+dependencies = ["biomero-schema>=0.2.1.dev1,<0.3", "numpy>=1.26.4,<3"]
 
 [project.optional-dependencies]
 identity = ["iscc-bio[ome-zarr]==0.2.0"]
