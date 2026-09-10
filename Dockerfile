@@ -11,7 +11,7 @@ COPY biomero-shallower/biomero_shallower /build/shallower/biomero_shallower
 RUN pip wheel --no-deps --no-build-isolation --wheel-dir /wheels /build/schema /build/shallower
 
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
-LABEL org.opencontainers.image.title="BIOMERO Shallower" \
+LABEL org.opencontainers.image.title="BIOMERO.shallower" \
       org.opencontainers.image.version="0.1.0"
 COPY biomero-shallower/requirements.lock /tmp/requirements.lock
 COPY --from=wheels /wheels /wheels

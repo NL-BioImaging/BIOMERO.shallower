@@ -1,4 +1,4 @@
-# BIOMERO Shallower
+# BIOMERO.shallower
 
 A filesystem-only, versioned result normalizer for BIOMERO. It compares returned
 OME-Zarr pixels and labels with the workflow's canonical input identities, then
