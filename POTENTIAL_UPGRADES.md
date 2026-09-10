@@ -217,9 +217,31 @@ Times below are UTC, matching BIOMERO and Slurm logs.
 | Direct input ZIP | 17:00:22.957 | 17:38:59.608 | 38m 36.8s | 6,465,013,963-byte ZIP; baseline was 39m 47.5s. |
 | Input SCP | 17:38:59.628 | 17:40:40.497 | 1m 40.9s | Baseline was 1m 51.8s. |
 | Remote unpack and no-op conversion | 17:40:40.498 | 17:41:34.706 | 54.2s | Input was already Zarr. |
-| Slurm analysis job 575 | 17:41:37 | running | | `cisegmentation`, GPU partition. |
+| Slurm analysis job 575 | 17:41:37 | 22:19:47 | 4h 38m 10s | Scheduler state `COMPLETED`; application wall time was 4h 38m 05.9s. |
+| Result ZIP creation | 22:20:21.351 | 22:22:25.753 | 2m 04.4s | 7,334,711,660-byte archive from 8,349,150,014 bytes, 154,198 files, and 115,168 directories. |
+| Result SCP and validation | 22:22:25.753 | 22:27:21.451 | 4m 55.7s | Byte transfer itself ended at 22:27:19.482. |
+| Permanent copy and extraction | 22:27:21.461 | 23:38:55.966 | 1h 11m 34.5s | Durable staged-results marker written at 23:38:55.985. |
+| First import-script attempt | 23:38:55.985 | 23:38:56 | less than 1s | Failed before order creation because the OMERO script-client connection had expired during extraction. Staged results remained recoverable. |
+| Recovery result discovery | Sep 10 00:01:42.490 | 00:01:42.640 | about 0.15s | Reused staged results and found the outer Zarr without recursively scanning its 269,366 paths. |
+| Primary recovery import order | 00:01:42.960 | running | | Order `2d0fa1b4-d502-4164-b3a2-760b4615a948`; entered preprocessing at 00:01:44.727. |
 
 At analysis start, the event-sourced launcher aggregate had advanced from
 `INITIALIZING` through `_SLURM_Image_Transfer.py` (`TRANSFERRING`, 5%) to
 `cisegmentation` (`JOB_RUNNING`, 50%). The launcher task's mechanical `CLAIMED`
 status remained separate and did not overwrite analysis progress.
+
+Job 575 completed all 846 images and returned four label sets per image. Its
+application breakdown was 1h 11m 41s for Cellpose `cyto3`, 2h 32m 57s for
+Cellpose `nuclei`, 12m 23s for Spotiflow `general`, 12m 55s for label
+finalization, 25m 00s for DuckDB measurements, and 2m 33s for database merge.
+The result contained 3,384 label sets, 1,029,249 objects, 2,058,498 intensity
+rows, and 1,420,786 relationships, with no label or measurement retries.
+
+The first import attempt exposed a different connection from the previously
+covered Blitz gateway: the OMERO script client itself had been idle for the
+71-minute extraction. The registered script and worker image were updated to
+enable the native script-client keepalive before reading inputs. The recovery
+started from the durable staged-results marker, so it repeated neither Slurm
+analysis nor archive transfer/extraction. Its importer poll uses the verified
+24-hour adaptive timeout. Final preprocessing, registration, event-order, and
+workflow-projection results remain to be recorded when the recovery terminates.
