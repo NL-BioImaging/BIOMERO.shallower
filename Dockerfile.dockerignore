@@ -1,0 +1,13 @@
+**
+!biomero-shallower/
+!biomero-shallower/pyproject.toml
+!biomero-shallower/requirements.lock
+!biomero-shallower/biomero_shallower/
+!biomero-shallower/biomero_shallower/*.py
+!biomero-schema/
+!biomero-schema/pyproject.toml
+!biomero-schema/README.md
+!biomero-schema/src/
+!biomero-schema/src/**
+**/__pycache__
+**/*.egg-info
