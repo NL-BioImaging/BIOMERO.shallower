@@ -186,19 +186,35 @@ must remove only the workflow's disposable canonical identity cache and measure:
 Any optimization must retain exact pixel identity and the semantic guards used
 to decide whether returned arrays are safe to reference.
 
+### 6. Profile and linearize local normalization planning
+
+In the September 9 control, approximately 13 minutes elapsed between the
+eligibility decision and the first observable transaction moves. The embedded
+importer normalizer associates 3,384 label components with 846 image nodes by
+repeated path-containment checks, or roughly 2.86 million candidate checks, and
+also reduces omitted directory trees with repeated ancestor searches. This is
+not yet a profiler result, but it is a strong target for measurement.
+
+Build direct label-parent indexes and prefix sets once, then benchmark the
+planning phase independently. Keep the eligibility rules, retained hierarchy,
+transaction journal, and output manifest unchanged. Because the standalone
+helper and importer share normalization code, a proven algorithmic improvement
+can benefit both local fallback and remote execution.
+
 ## Recommended order
 
-1. Complete the current control run with local shallowing and record the same
-   stage boundaries.
-2. Isolate permanent archive copy versus extraction time.
-3. Run the standalone helper's health and small disposable fixture through the
+The local-shallow control and its matching stage measurements are complete. The
+remaining work should proceed in this order:
+
+1. Isolate permanent archive copy versus extraction time.
+2. Run the standalone helper's health and small disposable fixture through the
    real Slurm/Apptainer path.
-4. Benchmark remote shallowing on a disposable copy of the retained 846-image
+3. Benchmark remote shallowing on a disposable copy of the retained 846-image
    result, then verify receipts and retained labels.
-5. Run the same workflow end to end with remote shallowing enabled and compare
+4. Run the same workflow end to end with remote shallowing enabled and compare
    archive size, transfer, worker preparation, importer registration, event
    order, and final OMERO hierarchy.
-6. Prototype direct-to-staging tar.zst, followed by bounded-memory SSH streaming
+5. Prototype direct-to-staging tar.zst, followed by bounded-memory SSH streaming
    only if the simpler path confirms a material end-to-end gain.
 
 ## Current control run
@@ -223,7 +239,14 @@ Times below are UTC, matching BIOMERO and Slurm logs.
 | Permanent copy and extraction | 22:27:21.461 | 23:38:55.966 | 1h 11m 34.5s | Durable staged-results marker written at 23:38:55.985. |
 | First import-script attempt | 23:38:55.985 | 23:38:56 | less than 1s | Failed before order creation because the OMERO script-client connection had expired during extraction. Staged results remained recoverable. |
 | Recovery result discovery | Sep 10 00:01:42.490 | 00:01:42.640 | about 0.15s | Reused staged results and found the outer Zarr without recursively scanning its 269,366 paths. |
-| Primary recovery import order | 00:01:42.960 | running | | Order `2d0fa1b4-d502-4164-b3a2-760b4615a948`; entered preprocessing at 00:01:44.727. |
+| Local identity evaluation | 00:01:44.727 | 00:43:44.257 | 41m 59.5s | Eligible: `input-plate-unchanged`; baseline was 42m 55s. |
+| Local normalization | 00:43:44.257 | 01:05:11.623 | 21m 27.4s | Stored a shallow Zarr with 846 image nodes; baseline was 22m 32.6s. |
+| OMERO registration | 01:05:11.709 | 01:07:35.449 | 2m 23.7s | Created fresh OMERO connections and registered Plate 2151 in Screen 301. |
+| Importer terminal detection | 01:07:35.449 | 01:08:05.206 | 29.8s | Adaptive polling observed the completed order without waiting for its 24-hour timeout. |
+| Metadata and workflow finalization | 01:08:05.206 | 01:08:08.223 | 3.0s | Added workflow metadata and DuckDB attachment; workflow reached `DONE`, 100%. |
+| Primary recovery import order | 00:01:42.960 | 01:07:35.449 | 1h 05m 52.5s | Order `2d0fa1b4-d502-4164-b3a2-760b4615a948` completed successfully. |
+| Recovery task | 00:01:31.716 | 01:08:08.148 | 1h 06m 36.4s | Reused durable staged results; analysis, transfer, and extraction were not repeated. |
+| Complete workflow | Sep 9 16:59:35.069 | Sep 10 01:08:08.223 | 8h 08m 33.2s | Includes the first import failure and about 22m 33s of operator fix, rebuild, and recovery delay. |
 
 At analysis start, the event-sourced launcher aggregate had advanced from
 `INITIALIZING` through `_SLURM_Image_Transfer.py` (`TRANSFERRING`, 5%) to
@@ -242,6 +265,45 @@ covered Blitz gateway: the OMERO script client itself had been idle for the
 71-minute extraction. The registered script and worker image were updated to
 enable the native script-client keepalive before reading inputs. The recovery
 started from the durable staged-results marker, so it repeated neither Slurm
-analysis nor archive transfer/extraction. Its importer poll uses the verified
-24-hour adaptive timeout. Final preprocessing, registration, event-order, and
-workflow-projection results remain to be recorded when the recovery terminates.
+analysis nor archive transfer/extraction.
+
+The recovery verified all three deployed fixes. Result discovery took about
+0.15 seconds instead of the baseline's 31-minute recursive scan. Worker logs
+show the script-client keepalive enabled every 60 seconds and an adaptive poll
+configured for 86,400 seconds, initially every five seconds and capped at 60
+seconds. The script stayed alive for the complete 66-minute recovery. After
+about 63 minutes of importer preprocessing, registration created fresh OMERO
+connections, avoiding the previously stale metadata connection. The importer
+registered Plate 2151 in Screen 301, attached its shallow collection reference,
+added nine metadata fields as MapAnnotation 19802, and completed order
+`2d0fa1b4-d502-4164-b3a2-760b4615a948`.
+
+A final read-only OMERO/database check found Plate 2151 linked to Screen 301 with
+94 wells and all 846 images. It has the expected shallow-reference,
+`biomero.import`, and `biomero/workflow` annotations. Its shallow manifest lists
+846 image nodes and exactly 3,384 label components: four labels for every image.
+
+The event-sourced workflow finished at version 9 with `WorkflowCompleted`.
+Its final projection was `DONE`, 100%, with `cisegmentation` as the main task
+and `SLURM_Import_Results.py` as the terminal task. Compared with the September
+3 non-detached workflow `daebc918-ad40-418a-b0f6-f2733e724b4c`, the scientific
+spine is unchanged: transfer, conversion, analysis, import, then workflow
+completion. Detached execution adds the launcher task and canonical-input
+record. The launcher's mechanical `CLAIMED` state remained isolated from the
+workflow-progress projection.
+
+Manual recovery was started while the detached supervisor was also becoming
+active. Both processes adopted the same staged workflow, creating a second
+import task/order. The duplicate importer process was stopped and its order was
+marked failed with an explicit suppression reason after the primary completed;
+the duplicate BIOMERO task remains truthfully `IMPORTING` in immutable history.
+No scientific output was published by that duplicate, and the successful
+workflow aggregate and projection were not rewritten. Future manual recovery
+must stop the supervisor first or use a single supported adoption path. This
+was an operator-recovery race, not the normal detached UI path.
+
+This control exercised the importer image's embedded local normalizer, not the
+new standalone helper or its durable intent journal. It proves the current
+local-shallow fallback and connection/polling fixes; the standalone helper's
+Slurm execution, receipt path, restart behavior, and performance still require
+the acceptance runs listed in `DELIVERY.md`.

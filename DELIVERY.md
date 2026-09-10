@@ -255,3 +255,23 @@ A read-only check against the running demonstration cluster found Apptainer
 runs as `10001:10001`. No image was transferred, no SIF was built, and no Slurm
 job was submitted during this check. These observations reduce setup uncertainty
 but do not satisfy the first acceptance gate.
+
+### Control-run update — 2026-09-10
+
+The local-shallow control completed successfully and is documented in
+`POTENTIAL_UPGRADES.md`. It registered the returned shallow result as Plate 2151
+in Screen 301 and finished `DONE`, 100%. The run validates the existing embedded
+importer normalizer and the new discovery, keepalive, and polling fixes; it does
+not exercise this standalone helper.
+
+The result strengthens the case for remote normalization. Local identity
+evaluation and normalization still consumed 41m 59.5s and 21m 27.4s,
+respectively, before a 2m 23.7s OMERO registration. Roughly 13 minutes elapsed
+inside normalization planning before transaction moves became observable. The
+shared parent-association and omitted-tree algorithms should be profiled and,
+if confirmed, linearized before or alongside the full-screen remote benchmark.
+
+The acceptance conclusion is otherwise unchanged: the design is fit for real
+cluster testing, but the remote flag should remain off until an immutable image
+is staged and the Slurm, interruption/recovery, receipt, scientific-result, and
+end-to-end gates above have passed.
