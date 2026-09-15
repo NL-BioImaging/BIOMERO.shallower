@@ -30,6 +30,66 @@ storage contract are documented in
   not establish a complete-workflow duration or successful storage reduction.
 - Times are single observations unless explicitly described as means.
 
+## Software provenance and release mapping
+
+The exact development commit is the primary provenance for the local runs.
+Package versions containing `.devN+g<sha>` identify an unreleased branch build:
+for example, `2.9.0b5.dev16+g14ded96b4` is a development checkout based on the
+beta.5 line, not the beta.5 release itself.
+
+Several feature branches were squash-merged. Their development SHAs are
+therefore not literal ancestors of the eventual release tag. In the tables
+below, **first release carrying the changes** means the first public prerelease
+whose squash commit contains the corresponding implementation. That release
+may also contain later commits and is not claimed to be byte-identical to the
+image used for the benchmark.
+
+### Run-to-build ledger
+
+| Run or Slurm jobs | Component | Exact deployed version or commit | Build classification | First release carrying the changes | Confidence/source |
+|---|---|---|---|---|---|
+| Small Plate, jobs 570-571 | BIOMERO | `2.9.0b4.dev11+g9dbd081a8`; `9dbd081a817305560d7927fb0239b13a7aaa363c` | Local `session-poller` development image | `v2.9.0-beta.6`, functionally via squash merge of PR 31 | High; retained worker images built before these jobs |
+| Small Plate, jobs 570-571 | biomero-scripts | `cc240fb9f6b8f64d7e03ee27b7b0b95ad1afdbcf` | Local `session-poller` development checkout | `v2.9.0-beta.6`, functionally via squash merge of PR 12 | High; retained worker/server Git checkout |
+| Small Plate, job 572 | BIOMERO | `2.9.0b4.dev13+g1fedb5fe2`; `1fedb5fe2322f66729df4a17923e690662f27d32` | Local `session-poller` development image | `v2.9.0-beta.6`, functionally via squash merge of PR 31 | High; retained worker image |
+| Small Plate, job 572 | biomero-scripts | `cc240fb9f6b8f64d7e03ee27b7b0b95ad1afdbcf` | Local `session-poller` development checkout | `v2.9.0-beta.6`, functionally via squash merge of PR 12 | High; retained worker Git checkout |
+| Small Plate, jobs 570-572 | BIOMERO.importer | `v1.5.0-beta.2`; `74b6649acc122a1afdc37d04cf80792e2fc1e0c2` | Tagged release | `v1.5.0-beta.2`, exact | High; retained importer source fingerprint and release files |
+| September 8 large Plate, job 574 | BIOMERO | `2.9.0b5.dev16+g14ded96b4`; `14ded96b49dc9d7b68dada642f6c6468b0b3dd52` | Local `session-poller` development image | `v2.9.0-beta.6`, functionally via squash merge of PR 31 | Exact; installed package metadata in retained worker image |
+| September 8 large Plate, job 574 | biomero-scripts | `990c6bee01fb90ab5429502f7a03b87ee9520a7e` | Local `session-poller` development checkout | `v2.9.0-beta.6`, functionally via squash merge of PR 12 | Exact; retained worker and server Git checkouts |
+| September 8 large Plate, job 574 | BIOMERO.importer | `v1.5.0-beta.2`; `74b6649acc122a1afdc37d04cf80792e2fc1e0c2` | Tagged release | `v1.5.0-beta.2`, exact | High; retained importer source fingerprint and release files |
+| September 9 control, job 575 | BIOMERO | `2.9.0b5.dev16+g14ded96b4`; `14ded96b49dc9d7b68dada642f6c6468b0b3dd52` | Local `session-poller` development image | `v2.9.0-beta.6`, functionally via squash merge of PR 31 | Exact; installed package metadata in retained worker image |
+| September 9 control, job 575 | biomero-scripts | `d04b8ed8e0e347338ca6165b56e972e96f3595e8` | Local `session-poller` development checkout | `v2.9.0-beta.6`, functionally via squash merge of PR 12 | Exact; retained worker and server Git checkouts |
+| September 9 control, first import attempt | BIOMERO.importer | `61d6f40afc40e177824f97060aa3dd7f0ed1436a` | Local build, beta.2 plus one commit | `v1.5.0-beta.4`, functionally via squash merge of PR 20 | Exact source fingerprint; image package metadata itself says only `0.0.0` |
+| September 9 control, successful recovery import | BIOMERO.importer | `a8a2cd2758d2e7264db3d5c4a30c53792de277e6` | Local build, beta.2 plus two commits | `v1.5.0-beta.4`, functionally via squash merge of PR 20 | Exact source fingerprint; image package metadata itself says only `0.0.0` |
+
+All retained local images above used `biomero-schema 0.2` and
+`iscc-bio 0.2.0`. The simple Plate workflow reported
+`simple-zarr-plate-processor v0.3.0`; the BIOMERO script metadata itself
+reported the API/script version as `2.9.0`, which is not precise enough to
+replace the commit-level evidence.
+
+The top-level local deployment was an untagged NL-BIOMERO `session-poller`
+checkout. Its exact repository SHA was not embedded in the Docker images and
+cannot be reconstructed reliably from the runtime logs. The feature bundle was
+first published as NL-BIOMERO `v1.8.0-beta.2` at `78650afdd27ca98239674b0adda1e3a4516a4757`;
+that is the first matching public release, not an assertion that the local
+checkout was identical. Current `.env` values must not be used as historical
+evidence because they have changed since these runs.
+
+### ACC prerelease ledger
+
+| Attempt | NL-BIOMERO release | BIOMERO | biomero-scripts | BIOMERO.importer | OMERO.biomero | Evidence |
+|---|---|---|---|---|---|---|
+| Small 18-image Plate relative-alias failure | Not preserved | Not preserved | Not preserved | `v1.5.0-beta.4` | Not preserved | Importer version from the captured failure diagnosis; do not infer the other versions |
+| Plate 252 input-preparation failure | `v1.8.0-beta.4`; `f050d2cf42143d03cf62371528ee721e1789dc94` | `2.9.0b7` | `v2.9.0-beta.7` | `1.5.0b5` | `1.7.0b3` | Reported deployed NL-BIOMERO release plus that tag's `.env` build/deployment manifest |
+
+The Plate 252 component versions are the versions declared by the released
+NL-BIOMERO manifest and are consistent with the reported deployment. They were
+not independently extracted from ACC container package metadata. In
+particular, the `v1.8.0-beta.4` Git tag is the release identity; the
+`NL_BIOMERO_VERSION=1.8.0b3` value still present inside that tag's `.env` was
+the Docker image reference used by Compose and must not be mistaken for the Git
+release tag.
+
 ## Executive summary
 
 | Observation | Dataset | Storage result | Shallow-specific processing | End-to-end status |
