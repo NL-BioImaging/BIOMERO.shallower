@@ -90,6 +90,58 @@ only as historical context and not as a comparison baseline.
 - The recorded attempt failed during input preparation and did not reach
   segmentation or return-side normalization.
 
+## Local compute environment and Slurm allocations
+
+The local Slurm accounting database is persistent and still contains the jobs
+used for these measurements. Accounting records the generic GRES allocation;
+the GPU model comes from `nvidia-smi` inside the same `c1` worker node.
+
+### GPU node
+
+| Property | Recorded or currently observed value |
+|---|---|
+| Slurm node | `c1` |
+| Slurm partitions | `normal` and `gpu` |
+| Slurm node configuration | 8 CPUs, 5,120 MiB real memory, `gpu:1` |
+| GPU | NVIDIA GeForce RTX 3060 |
+| GPU memory | 12,288 MiB |
+| Compute capability | 8.6 |
+| Driver observed on 2026-09-15 | 572.16 |
+| CPU visible inside `c1` | Intel Xeon w3-2423, 6 cores/12 threads |
+| Docker hard CPU/memory limit | None configured |
+
+The historical accounting row proves that each cisegmentation job below ran on
+`c1` with `gres/gpu=1`. It does not store the GPU product name. The RTX 3060
+attribution is therefore confirmed by the current one-GPU `c1` mapping and is
+valid provided that the host GPU or node mapping was not replaced after the
+September runs.
+
+| Slurm job | Workload | State | Runtime | Partition/node | Allocation |
+|---:|---|---|---:|---|---|
+| 568 | Five-Image cisegmentation batch | Completed | 2m35s | `gpu` / `c1` | 4 CPUs, 5 GiB, 1 GPU |
+| 569 | Five-Image cisegmentation batch | Completed | 3m38s | `gpu` / `c1` | 4 CPUs, 5 GiB, 1 GPU |
+| 570 | Small Plate simple Zarr processor | Completed | 31s | `normal` / `c1` | 4 CPUs, 5 GiB, no GPU requested |
+| 571 | Small Plate simple Zarr processor | Completed | 34s | `normal` / `c1` | 4 CPUs, 5 GiB, no GPU requested |
+| 572 | Small Plate simple Zarr processor | Completed | 36s | `normal` / `c1` | 4 CPUs, 5 GiB, no GPU requested |
+| 573 | Large-Plate cisegmentation attempt | Timed out | 45m10s | `gpu` / `c1` | 4 CPUs, 5 GiB, 1 GPU |
+| 574 | September 8 large-Plate analysis | Completed | 4h47m19s | `gpu` / `c1` | 4 CPUs, 5 GiB, 1 GPU |
+| 575 | September 9 control analysis | Completed | 4h38m10s | `gpu` / `c1` | 4 CPUs, 5 GiB, 1 GPU |
+
+Job 573 was an earlier large-Plate attempt with an insufficient 45-minute time
+limit. Jobs 574 and 575 are the two complete large-Plate GPU measurements.
+
+The approximately 33-minute end-to-end small Plate observation should not be
+described as 33 minutes of computation: its matching simple-processing jobs
+took only 31-36 seconds on Slurm. Most elapsed time was outside the scientific
+task, in export, transfer, import, shallow processing, and finalization.
+
+Likewise, the 41m59.5s identity and 21m27.4s normalization measurements for the
+846-image control did **not** run on the RTX 3060. Those were CPU/filesystem
+operations in the NL-BIOMERO worker/importer containers on Docker Desktop's
+Windows-backed storage. The GPU attribution applies to the cisegmentation
+analysis stage. The optional standalone remote shallower is also designed as a
+CPU Slurm job and has not yet produced a full-screen cluster timing.
+
 ## Small-result storage and processing measurements
 
 | Scenario | Full or estimated full | Stored shallow | Avoided | Processing or reconstruction |
@@ -137,7 +189,7 @@ canonical identity attempt was observed earlier in the run.
 | Input ZIP creation | 39m47.5s | Full input on Windows/Docker storage |
 | Input SCP | 1m51.8s | |
 | Remote unpack/no-op conversion | about 55.8s | Input was already Zarr |
-| Analysis | about 4h48m | GPU workflow |
+| Analysis, Slurm job 574 | 4h47m19s | `c1`: 4 CPUs, 5 GiB, RTX 3060 allocation |
 | Result ZIP creation | 2m08.8s | |
 | Result SCP | 5m21.1s | |
 | Permanent archive copy and extraction | 1h11m40.4s | Windows-backed `/data` mount |
@@ -172,7 +224,7 @@ was disabled; this used the embedded importer normalizer.
 | Input ZIP creation | 38m36.8s | 6,465,013,963-byte ZIP |
 | Input SCP | 1m40.9s | |
 | Remote unpack/no-op conversion | 54.2s | |
-| Slurm analysis, job 575 | 4h38m10s | Completed |
+| Slurm analysis, job 575 | 4h38m10s | `c1`: 4 CPUs, 5 GiB, RTX 3060 allocation |
 | Result ZIP creation | 2m04.4s | 7,334,711,660 B from 8,349,150,014 B |
 | Result SCP and validation | 4m55.7s | |
 | Permanent copy and extraction | 1h11m34.5s | |
