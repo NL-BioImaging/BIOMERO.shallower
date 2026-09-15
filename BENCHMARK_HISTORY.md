@@ -109,7 +109,7 @@ default version set.
 | ACC Plate 252 attempt | 846 source images | Not reached | Return-side shallowing not reached | Failed after 1h03m35s during input preparation |
 | ACC small Plate prerelease | 18 source images | Not established | Not reached successfully | Failed during cold canonical identity aliasing |
 | ACC small Plate validation | 18 source images | 1,803,585 B retained; full size not recorded | 33.42s | Successful in 4m03.21s |
-| ACC `A-FULL-HCS` | 846 images, four labels each | Successful shallow manifest; byte reduction not recorded | 45m08s | Successful in 2h04m28s |
+| ACC `A-FULL-HCS` | 846 images, one cell label each | 540,582,567 B retained; full size not recorded | 45m08.3s | Successful in 2h04m27.7s |
 
 The often-used shorthand that the large Plate saved roughly 90% of disk space
 "at a cost of about two hours" needs qualification:
@@ -157,8 +157,11 @@ only as historical context and not as a comparison baseline.
 ### ACC Plate 252
 
 - 846 source images.
-- The recorded attempt failed during input preparation and did not reach
+- The first recorded attempt failed during input preparation and did not reach
   segmentation or return-side normalization.
+- The later `A-FULL-HCS` validation reused the generation-1 canonical Plate,
+  ran Cellpose `cyto3` only, and returned one `labels_cells` component for each
+  of the 846 Images.
 
 ## Local compute environment and Slurm allocations
 
@@ -382,7 +385,8 @@ different lifecycle stages. The relevant local source-side comparisons are the
 ## ACC successful full integration: September 15, 2026
 
 The `A-FULL-HCS` run completed the detached, shallow-Zarr workflow over all 846
-source Images. It used NL-BIOMERO `1.8.0-beta.5`, BIOMERO `2.9.0b6`,
+source Images. It ran one Cellpose `cyto3` model pass and returned one label
+set per Image. It used NL-BIOMERO `1.8.0-beta.5`, BIOMERO `2.9.0b6`,
 biomero-scripts `v2.9.0-beta.6`, BIOMERO.importer `1.5.0-beta.5`, and
 OMERO.biomero `1.7.0b3`.
 
@@ -392,66 +396,165 @@ OMERO.biomero `1.7.0b3`.
 | Slurm job | `3296955` |
 | Result | Plate 402 |
 | Input and result Images | 846 source Images; 846 unique result Images |
-| Inference concurrency | Eight configured workers |
-| GPU evidence currently recorded | 12 GB MIG slice; parent GPU and exact MIG profile not yet recorded |
+| Analysis payload | Cellpose `cyto3` only; 846 model-field segmentations |
+| Inference concurrency | Eight configured and effective workers |
+| Slurm allocation | `gpu02`, `gpu` partition, 18 CPUs, 64 GB, one `1g.12gb` MIG allocation, 24-hour limit |
+| GPU evidence | Exact profile `1g.12gb`; parent GPU and host driver unavailable after allocation ended |
 | Final state | `DONE`, 100%, main task `cisegmentation` |
 
 ### End-to-end timing
 
-| Stage | ACC | Windows/Docker control | ACC relative to Windows |
-|---|---:|---:|---:|
-| Cached input packaging and transfer | 18m44s | 40m18s | 2.15× faster |
-| Remote conversion/setup | 7.46s | 54.2s | 7.27× faster |
-| Slurm cisegmentation | 25m37s | 4h38m10s | 10.86× faster |
-| Result ZIP and transfer | 5m28s | 7m00s | 1.28× faster |
-| Permanent copy and extraction | 25m27s | 1h11m35s | 2.81× faster |
-| Result discovery | Effectively immediate | 0.15s | Equivalent at this resolution |
-| Identity and eligibility | 23m59s | 41m59s | 1.75× faster |
-| Shallow normalization | 21m09s | 21m27s | 1.01× faster |
-| OMERO registration | 1m13s | Included below | Not separately comparable |
-| Workflow final bookkeeping | 1m52s | Included below | Not separately comparable |
-| Registration through `DONE` | 3m05s | About 2m57s | 8s slower |
-| **End to end** | **2h04m28s** | **About 7h44m** | **3.73× faster** |
+| Stage | ACC | Windows/Docker control | Comparison note |
+|---|---:|---:|---|
+| Input ZIP creation | 16m04.667s | 38m36.8s | ACC faster |
+| Input SCP | 1m15.412s | 1m40.9s | ACC faster |
+| Remote unpack/no-op conversion | 1m09.740s | 54.2s | ACC 15.5s slower |
+| Complete input transfer task | 18m30.217s | About 41m12s | ACC about 2.23x faster |
+| Slurm cisegmentation | 25m37s | 4h38m10s | Different analysis payloads; not a hardware speedup |
+| Result ZIP creation | 3m47.614s | 2m04.4s | ACC slower despite producing fewer labels |
+| Result SCP and validation | 1m20.952s | 4m55.7s | ACC faster |
+| Result ZIP plus transfer | 5m08.566s | About 7m00s | ACC about 1.36x faster |
+| Permanent copy and extraction | 25m27.007s | 1h11m34.5s | ACC about 2.81x faster |
+| Result discovery | About 0.004s | About 0.15s | Both effectively immediate |
+| Identity and eligibility | 23m58.848s | 41m59.5s | ACC about 1.75x faster |
+| Shallow normalization | 21m09.428s | 21m27.4s | Nearly identical |
+| OMERO registration/reference attachment | About 1m13.153s | 2m23.7s | ACC faster |
+| Workflow final bookkeeping | About 1m51.868s | Not directly separated | |
+| Registration through `DONE` | About 3m05s | About 2m57s | Similar |
+| **End to end** | **2h04m27.654s** | **About 7h44m** | Operational scenarios differ; raw ratio about 3.73x |
 
 The ACC input reused the canonical Plate cache. The Windows control also used
 a cached canonical discovery before packaging, but the two deployments have
 different storage and export paths; neither timing should be presented as an
 ACC-versus-Windows cold-export comparison.
 
+The end-to-end and Slurm ratios are useful operational observations, not
+like-for-like analysis benchmarks. ACC performed one model pass and produced
+846 label sets, whereas Windows performed three model passes and produced
+3,384 label sets plus substantially more objects, intensity rows, and
+relationships.
+
 ### Analysis concurrency and throughput
 
-The initial hypothesis that Windows inference was serial is disproved by the
-retained Slurm output for local job 575. Its command selected workers
-automatically with `--max-inference-workers=0`, and every model pass used CUDA
-without a retry.
+The exact ACC image was workflow `cisegmentation v0.5.0`, built from
+`cellularimagingcf/w_cisegmentation:v0.5.0` as this SIF:
 
-| Evidence | Windows/Docker job 575 | ACC job 3296955 | Ratio or interpretation |
+| Image property | ACC value |
+|---|---|
+| SIF path | `/appdata/users/svc_omero_acc/singularity_images/workflows/cisegmentation/w_cisegmentation_v0.5.0.sif` |
+| SHA-256 | `c15d9c7a8427711107a4416e96a2c2f06e8e543860ca84980a724fef3f342105` |
+| SIF size | 8,095,285,248 B |
+| Build | Apptainer 1.4.1-1.el9, amd64, 2026-09-01 16:59:38 CEST |
+| Runtime | Python 3.11.15; PyTorch 2.11.0+cu126; Cellpose 4.2.1.1; legacy Cellpose 3 1.1.0; Spotiflow 0.6.5 |
+
+The effective analysis selected Cellpose `cyto3` on channel 1 with nuclei
+channel 0, cell expansion 10.0, border-cell removal, original-data inclusion,
+label overwrite, DuckDB measurements, automatic CUDA device selection, eight
+inference workers, and automatic label/measurement workers. The nucleus and
+all four foci models were `skip`; batching and ROI conversion were disabled.
+
+The cached input was Plate 252, `20220714_TKI_482`, at
+`.accprocessed/Plate-252.g1.ome.zarr`: 846 two-channel `uint16` fields with
+shape `[2, 2008, 2008]` and axes `[c, y, x]`. All 846 canonical identities
+were cached. An example recorded identifier was
+`ISCC:K4AFSE7HLJIVOJZDI3NNBUZRSOU7S4IORQQHEVURCTDPRHM3EJLU22I`. No matching
+Windows canonical identifier was retained, so byte-identical input across the
+deployments is not established.
+
+The Windows command used the same `v0.5.0` workflow tag, but its retained SIF
+digest is unavailable. Both implementations sum the time around each model
+evaluation into the aggregate `inference` metric. The workloads themselves
+were nevertheless different:
+
+| Evidence | ACC job 3296955 | Windows/Docker job 575 | Interpretation |
 |---|---:|---:|---|
-| Inference wall time | 3h57m01s | 21m18s | ACC 11.13× faster |
-| Aggregate inference work | 90,500.42s | 9,932.66s | ACC aggregate work 9.11× lower |
-| Effective workers | cyto3: 6; nuclei: 7; Spotiflow: 2 | 8 configured | ACC concurrency is higher, but Windows was not serial |
-| Plate-field throughput (`846 / inference wall`) | 0.0595 fields/s | 0.662 fields/s | ACC 11.13× higher |
-| Inference retries | 0 for every model pass | 0 | Retry/OOM behavior does not explain the difference |
-| GPU | RTX 3060, 12 GB | 12 GB MIG slice | Equal VRAM is not equal compute capability |
+| Models executed | Cellpose `cyto3` | Cellpose `cyto3`, Cellpose `nuclei`, Spotiflow `general` | Windows ran three passes instead of one |
+| Model-field segmentations | 846 | 2,538 | Exactly 3x as many on Windows |
+| Aggregate inference | 9,932.66s | 90,500.42s | Raw 9.111x ratio combines workload count and speed |
+| Average per model-field segmentation | 11.742s | 35.658s across the mixed models | Mixed-model average is 3.037x higher on Windows |
+| Inference wall time | 21m18s | 3h57m01s across all three passes | Not a like-for-like wall comparison |
+| Effective workers | 8 | cyto3: 6; nuclei: 7; Spotiflow: 2 | Windows was not serial |
+| Inference retries | 0 | 0 for every model pass | Retry/OOM behavior does not explain the difference |
+| GPU | `1g.12gb` MIG allocation; parent unknown | RTX 3060, 12 GB | Equal VRAM does not establish equal compute |
 
-The Windows workflow recorded 90,500.42 aggregate inference-seconds over
-2,538 model-field segmentations, or 35.66s per segmentation. Its observed pass
-times were 1h11m41s for Cellpose `cyto3`, 2h32m57s for Cellpose `nuclei`, and
-12m23s for Spotiflow `general`. The complete Slurm job took 4h38m10s after
-label finalization, measurements, and publication were included.
+The 9.111x aggregate difference decomposes almost exactly into three times as
+many model-field executions and a 3.037x difference in the mixed per-execution
+average. It must not be reported as a 9.11x GPU speedup. Even the 3.037x figure
+is not a direct GPU comparison because the Windows average includes three
+different models.
 
-Eight ACC workers rather than the Windows pass-dependent 6/7/2 workers helps
-wall-clock concurrency, especially for Spotiflow, but cannot by itself explain
-the result. Dividing ACC's 9,932.66 aggregate seconds by eight predicts about
-20m42s, close to the observed 21m18s and consistent with good worker
-utilization. The aggregate inference metric is nevertheless already 9.11×
-lower on ACC than on Windows.
-Assuming both workflow builds calculate that metric identically, most of the
-gain occurred inside individual model invocations rather than solely through
-additional overlap. A conclusive attribution still needs the ACC parent GPU
-model and MIG profile, per-model worker and timing summaries, exact workflow
-container version or digest, and confirmation that model inputs and parameters
-were equivalent.
+The closest individual comparison is Cellpose `cyto3`: ACC completed it in
+21m18s with eight workers, while Windows completed it in 1h11m41s with six
+workers, a 3.36x wall-time difference. The Cellpose channel parameters were not
+identical (`cell_nuclei_channel=0` on ACC versus `1` on Windows), and exact
+source-pixel identity is unproven, so this also remains an operational rather
+than controlled benchmark.
+
+Dividing ACC's 9,932.66 aggregate inference-seconds by eight predicts about
+20m42s, close to its observed 21m18s and consistent with good worker
+utilization. ACC then used 17 label workers and 17 measurement workers without
+retries. It produced 846 label sets, 316,656 objects, 633,312 intensity rows,
+and no relationships. Windows produced 3,384 label sets, 1,029,249 objects,
+2,058,498 intensity rows, and 1,420,786 relationships.
+
+### ACC analysis timing detail
+
+| Analysis component | ACC observation |
+|---|---:|
+| Cellpose `cyto3` inference wall time | 21m18s |
+| Segmentation aggregate runtime | 9,993.94s |
+| Aggregate inference | 9,932.66s |
+| OME-Zarr reads | 30.65s |
+| Imports | 50.62s |
+| Model loading | 9.35s |
+| Label finalization wall time | 8.79s |
+| OME-Zarr label writes | 59.23s |
+| Complete measurement phase | 151.11s |
+| Source publication copy | About 1m23s; 6,328.1 MiB and 27,295 files |
+| Actual cisegmentation process wall time | 25m32.69s |
+| Slurm elapsed | 25m37s |
+
+### Storage and shallow-manifest evidence
+
+| Measurement | ACC value |
+|---|---:|
+| Full returned archive entries before shallowing | 53,522 |
+| Full returned Zarr bytes | Unavailable |
+| Retained shallow tree | 540,582,567 B; 28,141 regular files |
+| Canonical generation-1 Zarr reused | 6,635,474,968 B; 27,295 regular files |
+| `.biomero-shallow.json` | 2,959,587 B |
+| Manifest mappings | 846 returned Images, 846 canonical sources, 846 label nodes/components |
+
+The manifest records schema 1, model `rfc8-shallow-copy`, and interchange
+profile `ngff-0.4-zarr-v2`. It contains one `labels_cells` output for each
+Image. The pre-shallow byte count and deleted result-ZIP size are unavailable,
+so neither exact avoided bytes nor an ACC storage-reduction percentage can be
+calculated. The canonical tree size must not be substituted for the missing
+full returned-result size.
+
+### Exact ACC timeline
+
+All timestamps are CEST, UTC+02:00.
+
+| Event | Timestamp |
+|---|---|
+| Workflow initiated | 2026-09-15 11:16:45.395 |
+| Input packaging began | 11:17:04.504 |
+| Canonical inputs recorded | 11:35:48.127 |
+| Slurm start / end | 11:36:12 / 12:01:49 |
+| Result ZIP began | 12:02:18.395 |
+| Retrieval/extraction completed | 12:32:53.970 |
+| Import order started | 12:32:56.069 |
+| Identity evaluation started | 12:32:59.555 |
+| Shallow eligibility established | 12:56:58.403 |
+| Shallow normalization completed | 13:18:07.866 |
+| Registration began | 13:18:07.867 |
+| Plate reference attached | 13:19:21.020 |
+| Import completed event | 13:19:21.181 |
+| Provenance annotation failure | 13:20:14.812 |
+| Result marked imported | 13:20:15.346 |
+| Importer workflow completed | 13:20:54.535 |
+| Final workflow `DONE` | 13:21:13.049 |
 
 ### Correctness and detached-session verification
 
@@ -466,11 +569,21 @@ were equivalent.
 - The internal orchestration launcher remained `CLAIMED`, but that mechanical
   state did not leak into the analysis or workflow-facing status.
 
-One post-success provenance `MapAnnotation` exceeded PostgreSQL's indexed-row
-limit: its value was 2,800 bytes against a 2,704-byte limit. This known metadata
-failure did not affect result pixels, canonical input recording, the shallow
-manifest, exact-once registration, or the final workflow state. It should be
-tracked separately from the successful detached/shallow-Zarr integration test.
+One post-success task-provenance `MapAnnotation` transaction failed. The
+offending key was
+`Task_SLURM_Run_Workflow.py_Param_wf_params_cisegmentation` in namespace
+`biomero/workflow/task/SLURM_Run_Workflow.py`. Its value contained the complete
+serialized 9,455-character workflow-parameter schema rather than only the
+effective values. The 9,458-byte UTF-8 value produced a 2,800-byte PostgreSQL
+B-tree index row, exceeding the 2,704-byte limit.
+
+The workflow-level provenance annotation, importer annotation, shallow
+annotation, canonical linkage, and attached Slurm log succeeded. The failed
+transaction rolled back attempted annotation 978, and the annotation loop did
+not write subsequent task/job provenance entries. This known metadata defect
+did not affect result pixels, the shallow manifest, exact-once registration, or
+the final workflow state. It should be tracked separately from the successful
+detached/shallow-Zarr integration test.
 
 ## Archive and extraction microbenchmarks
 
@@ -535,21 +648,21 @@ standalone helper's 846-image Slurm performance.
 
 The following measurements are not yet available or were not preserved:
 
-- exact retained bytes for the successful 846-image shallow result;
+- the pre-shallow full-result bytes and exact avoided percentage for the
+  successful ACC 846-image run;
+- the pre-shallow bytes for the successful ACC 18-image run;
 - a cold source identity run and a warm cached rerun on the same ACC Plate;
 - a full-screen run with remote shallowing enabled;
-- separate permanent archive-copy and extraction times on Windows;
+- separate permanent archive-copy and extraction times on both Windows and
+  ACC;
 - remote shallower identity, normalization, archive size/time, SCP, extraction,
-  receipt validation, and OMERO registration durations.
-- the ACC parent GPU model, exact MIG profile, allocated CPUs and memory;
-- ACC per-model aggregate inference, wall time, effective workers, CUDA-memory
-  probes, and the exact cisegmentation image digest;
-- confirmation that the ACC and Windows model inputs and parameters were
-  equivalent beyond having the same 846-image/four-label workload;
-- separate ACC input packaging, SCP, and unpack durations, and separate result
-  ZIP and SCP durations;
-- the full pre-shallow and retained post-shallow byte counts for both ACC
-  success runs.
+  receipt validation, and OMERO registration durations;
+- the ACC parent GPU model, host driver, and host-supported CUDA version;
+- the exact Windows cisegmentation SIF digest and a canonical source identity
+  or checksum comparable with ACC Plate 252;
+- a controlled ACC-versus-Windows Cellpose `cyto3` run with identical source
+  pixels, channels, parameters, worker limit, and container digest;
+- the deleted ACC result-ZIP byte size.
 
 Append new ACC measurements using this shape:
 
