@@ -81,6 +81,7 @@ evidence because they have changed since these runs.
 |---|---|---|---|---|---|---|
 | Small 18-image Plate relative-alias failure | Not preserved | Not preserved | Not preserved | `v1.5.0-beta.4` | Not preserved | Importer version from the captured failure diagnosis; do not infer the other versions |
 | Plate 252 input-preparation failure | `v1.8.0-beta.4`; `f050d2cf42143d03cf62371528ee721e1789dc94` | `2.9.0b7` | `v2.9.0-beta.7` | `1.5.0b5` | `1.7.0b3` | Reported deployed NL-BIOMERO release plus that tag's `.env` build/deployment manifest |
+| `A-FULL-HCS` successful full integration | `1.8.0-beta.5`; `aad7fffea6d803276a8cfe57e7e233991a861ec8` | `2.9.0b6` | `v2.9.0-beta.6` | `1.5.0-beta.5` | `1.7.0b3` | Runtime versions recorded by the ACC integration test |
 
 The Plate 252 component versions are the versions declared by the released
 NL-BIOMERO manifest and are consistent with the reported deployment. They were
@@ -89,6 +90,13 @@ particular, the `v1.8.0-beta.4` Git tag is the release identity; the
 `NL_BIOMERO_VERSION=1.8.0b3` value still present inside that tag's `.env` was
 the Docker image reference used by Compose and must not be mistaken for the Git
 release tag.
+
+For the successful `A-FULL-HCS` run, the runtime-recorded BIOMERO and scripts
+versions match `v1.8.0-beta.5`'s `.env.shared`, not its demo `.env`. The
+runtime importer was beta.5 rather than `.env.shared`'s beta.4. Treat this as
+an NL-BIOMERO beta.5 deployment with explicitly recorded component versions,
+not as proof that every container came unchanged from the demo release's
+default version set.
 
 ## Executive summary
 
@@ -100,6 +108,8 @@ release tag.
 | Windows/Docker large-Plate control | 846 images, four labels each | Approximately 90-93% inferred saved | 1h03m26.9s | Successful after recoverable connection failure |
 | ACC Plate 252 attempt | 846 source images | Not reached | Return-side shallowing not reached | Failed after 1h03m35s during input preparation |
 | ACC small Plate prerelease | 18 source images | Not established | Not reached successfully | Failed during cold canonical identity aliasing |
+| ACC small Plate validation | 18 source images | 1,803,585 B retained; full size not recorded | 33.42s | Successful in 4m03.21s |
+| ACC `A-FULL-HCS` | 846 images, four labels each | Successful shallow manifest; byte reduction not recorded | 45m08s | Successful in 2h04m28s |
 
 The often-used shorthand that the large Plate saved roughly 90% of disk space
 "at a cost of about two hours" needs qualification:
@@ -207,6 +217,7 @@ CPU Slurm job and has not yet produced a full-screen cluster timing.
 | Scenario | Full or estimated full | Stored shallow | Avoided | Processing or reconstruction |
 |---|---:|---:|---:|---:|
 | 18-image Plate | 146,143,912 B | 10,775,929 B | 135,367,983 B (92.6%) | 12.653s identity mean + 12.729s normalization mean = about 25.4s |
+| ACC 18-image validation | Not retained | 1,803,585 B | Cannot calculate without the pre-shallow size | 25.68s identity + 7.74s normalization = 33.42s |
 | Five-Image live batch | 28.463 MiB estimated | 2.319 MiB | 26.144 MiB (91.9%) | About 10s identity and normalization total |
 | Multi-generation Image | 8,956,291 B estimated | 990,300 B | 7,965,991 B (88.9%) | 18.3s identity + 1.4s normalization; 7.6s outbound reconstruction |
 | Earlier individual Image | 6,848,883 B | 185,072 B | 6,663,811 B (97.3%) | Not measured |
@@ -229,6 +240,13 @@ normalization phase to 12.729 seconds.
 
 Four workers was fastest on the Windows development mount. This does not imply
 that four is optimal for ACC storage or CPUs.
+
+The successful ACC 18-image validation completed end to end in 4m03.21s. Its
+result-import task took 1m15.41s, including 25.68s identity, 7.74s
+normalization, 5.31s registration, and approximately 9.68s final bookkeeping.
+The cisegmentation task took 2m11.32s. Because a separate full-result byte size
+was not recorded, the 1,803,585-byte retained result does not establish an ACC
+storage-reduction percentage.
 
 ## Large-Plate local baseline: September 8, 2026
 
@@ -361,6 +379,99 @@ with the local 41m59.5s returned-result identity phase is invalid: those are
 different lifecycle stages. The relevant local source-side comparisons are the
 9m02s cold attempt and the 0.367s cached lookup, with their cache states stated.
 
+## ACC successful full integration: September 15, 2026
+
+The `A-FULL-HCS` run completed the detached, shallow-Zarr workflow over all 846
+source Images. It used NL-BIOMERO `1.8.0-beta.5`, BIOMERO `2.9.0b6`,
+biomero-scripts `v2.9.0-beta.6`, BIOMERO.importer `1.5.0-beta.5`, and
+OMERO.biomero `1.7.0b3`.
+
+| Item | Identifier or value |
+|---|---|
+| Workflow | `d5a15987-88c6-41bf-8930-6c23a6b56d81` |
+| Slurm job | `3296955` |
+| Result | Plate 402 |
+| Input and result Images | 846 source Images; 846 unique result Images |
+| Inference concurrency | Eight configured workers |
+| GPU evidence currently recorded | 12 GB MIG slice; parent GPU and exact MIG profile not yet recorded |
+| Final state | `DONE`, 100%, main task `cisegmentation` |
+
+### End-to-end timing
+
+| Stage | ACC | Windows/Docker control | ACC relative to Windows |
+|---|---:|---:|---:|
+| Cached input packaging and transfer | 18m44s | 40m18s | 2.15× faster |
+| Remote conversion/setup | 7.46s | 54.2s | 7.27× faster |
+| Slurm cisegmentation | 25m37s | 4h38m10s | 10.86× faster |
+| Result ZIP and transfer | 5m28s | 7m00s | 1.28× faster |
+| Permanent copy and extraction | 25m27s | 1h11m35s | 2.81× faster |
+| Result discovery | Effectively immediate | 0.15s | Equivalent at this resolution |
+| Identity and eligibility | 23m59s | 41m59s | 1.75× faster |
+| Shallow normalization | 21m09s | 21m27s | 1.01× faster |
+| OMERO registration | 1m13s | Included below | Not separately comparable |
+| Workflow final bookkeeping | 1m52s | Included below | Not separately comparable |
+| Registration through `DONE` | 3m05s | About 2m57s | 8s slower |
+| **End to end** | **2h04m28s** | **About 7h44m** | **3.73× faster** |
+
+The ACC input reused the canonical Plate cache. The Windows control also used
+a cached canonical discovery before packaging, but the two deployments have
+different storage and export paths; neither timing should be presented as an
+ACC-versus-Windows cold-export comparison.
+
+### Analysis concurrency and throughput
+
+The initial hypothesis that Windows inference was serial is disproved by the
+retained Slurm output for local job 575. Its command selected workers
+automatically with `--max-inference-workers=0`, and every model pass used CUDA
+without a retry.
+
+| Evidence | Windows/Docker job 575 | ACC job 3296955 | Ratio or interpretation |
+|---|---:|---:|---|
+| Inference wall time | 3h57m01s | 21m18s | ACC 11.13× faster |
+| Aggregate inference work | 90,500.42s | 9,932.66s | ACC aggregate work 9.11× lower |
+| Effective workers | cyto3: 6; nuclei: 7; Spotiflow: 2 | 8 configured | ACC concurrency is higher, but Windows was not serial |
+| Plate-field throughput (`846 / inference wall`) | 0.0595 fields/s | 0.662 fields/s | ACC 11.13× higher |
+| Inference retries | 0 for every model pass | 0 | Retry/OOM behavior does not explain the difference |
+| GPU | RTX 3060, 12 GB | 12 GB MIG slice | Equal VRAM is not equal compute capability |
+
+The Windows workflow recorded 90,500.42 aggregate inference-seconds over
+2,538 model-field segmentations, or 35.66s per segmentation. Its observed pass
+times were 1h11m41s for Cellpose `cyto3`, 2h32m57s for Cellpose `nuclei`, and
+12m23s for Spotiflow `general`. The complete Slurm job took 4h38m10s after
+label finalization, measurements, and publication were included.
+
+Eight ACC workers rather than the Windows pass-dependent 6/7/2 workers helps
+wall-clock concurrency, especially for Spotiflow, but cannot by itself explain
+the result. Dividing ACC's 9,932.66 aggregate seconds by eight predicts about
+20m42s, close to the observed 21m18s and consistent with good worker
+utilization. The aggregate inference metric is nevertheless already 9.11×
+lower on ACC than on Windows.
+Assuming both workflow builds calculate that metric identically, most of the
+gain occurred inside individual model invocations rather than solely through
+additional overlap. A conclusive attribution still needs the ACC parent GPU
+model and MIG profile, per-model worker and timing summaries, exact workflow
+container version or digest, and confirmation that model inputs and parameters
+were equivalent.
+
+### Correctness and detached-session verification
+
+- The originating browser/OMERO session expired after ten minutes while the
+  detached workflow continued to completion.
+- Plate 402 contains exactly 846 unique result Images; the source Plate's 846
+  Image IDs remained unchanged.
+- `CanonicalInputsRecorded` is present and `.biomero-shallow.json` contains 846
+  Image and label mappings.
+- No CUDA retry or OOM, timeout, stale connection, duplicate Slurm job, or
+  duplicate import was observed.
+- The internal orchestration launcher remained `CLAIMED`, but that mechanical
+  state did not leak into the analysis or workflow-facing status.
+
+One post-success provenance `MapAnnotation` exceeded PostgreSQL's indexed-row
+limit: its value was 2,800 bytes against a 2,704-byte limit. This known metadata
+failure did not affect result pixels, canonical input recording, the shallow
+manifest, exact-once registration, or the final workflow state. It should be
+tracked separately from the successful detached/shallow-Zarr integration test.
+
 ## Archive and extraction microbenchmarks
 
 ### Full retained 846-image result
@@ -424,16 +535,21 @@ standalone helper's 846-image Slurm performance.
 
 The following measurements are not yet available or were not preserved:
 
-- an exact successful end-to-end duration for the small 18-image Plate;
 - exact retained bytes for the successful 846-image shallow result;
-- a clean 846-image run without any operator recovery delay;
 - a cold source identity run and a warm cached rerun on the same ACC Plate;
-- a completed ACC segmentation and return path with the current keepalive and
-  alias fixes;
 - a full-screen run with remote shallowing enabled;
 - separate permanent archive-copy and extraction times on Windows;
 - remote shallower identity, normalization, archive size/time, SCP, extraction,
   receipt validation, and OMERO registration durations.
+- the ACC parent GPU model, exact MIG profile, allocated CPUs and memory;
+- ACC per-model aggregate inference, wall time, effective workers, CUDA-memory
+  probes, and the exact cisegmentation image digest;
+- confirmation that the ACC and Windows model inputs and parameters were
+  equivalent beyond having the same 846-image/four-label workload;
+- separate ACC input packaging, SCP, and unpack durations, and separate result
+  ZIP and SCP durations;
+- the full pre-shallow and retained post-shallow byte counts for both ACC
+  success runs.
 
 Append new ACC measurements using this shape:
 
