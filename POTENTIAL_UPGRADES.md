@@ -1,5 +1,8 @@
 # BIOMERO full-screen transfer and shallow-Zarr performance
 
+For the consolidated record of all small-result, full-screen, archive, local,
+and ACC observations, see [`BENCHMARK_HISTORY.md`](BENCHMARK_HISTORY.md).
+
 ## Scope
 
 This report records the September 8, 2026 full-screen baseline and the
