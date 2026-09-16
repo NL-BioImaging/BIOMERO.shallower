@@ -1,6 +1,6 @@
 # BIOMERO shallow-Zarr benchmark history
 
-Last updated: 2026-09-15
+Last updated: 2026-09-16
 
 ## Purpose
 
@@ -82,6 +82,7 @@ evidence because they have changed since these runs.
 | Small 18-image Plate relative-alias failure | Not preserved | Not preserved | Not preserved | `v1.5.0-beta.4` | Not preserved | Importer version from the captured failure diagnosis; do not infer the other versions |
 | Plate 252 input-preparation failure | `v1.8.0-beta.4`; `f050d2cf42143d03cf62371528ee721e1789dc94` | `2.9.0b7` | `v2.9.0-beta.7` | `1.5.0b5` | `1.7.0b3` | Reported deployed NL-BIOMERO release plus that tag's `.env` build/deployment manifest |
 | `A-FULL-HCS` successful full integration | `1.8.0-beta.5`; `aad7fffea6d803276a8cfe57e7e233991a861ec8` | `2.9.0b6` | `v2.9.0-beta.6` | `1.5.0-beta.5` | `1.7.0b3` | Runtime versions recorded by the ACC integration test |
+| Three-model integration, workflow `3999cf8b…` | Not supplied | Not supplied | Not supplied | Not supplied | Not supplied | New ACC run; do not inherit versions from the preceding one-model run without confirmation |
 
 The Plate 252 component versions are the versions declared by the released
 NL-BIOMERO manifest and are consistent with the reported deployment. They were
@@ -110,6 +111,7 @@ default version set.
 | ACC small Plate prerelease | 18 source images | Not established | Not reached successfully | Failed during cold canonical identity aliasing |
 | ACC small Plate validation | 18 source images | 1,803,585 B retained; full size not recorded | 33.42s | Successful in 4m03.21s |
 | ACC `A-FULL-HCS` | 846 images, one cell label each | 540,582,567 B retained; full size not recorded | 45m08.3s | Successful in 2h04m27.7s |
+| ACC three-model integration | 846 images, four labels each | 6,630,940,825 B avoided (83.91%) | 1h31m17s | Successful in 3h39m36s |
 
 The often-used shorthand that the large Plate saved roughly 90% of disk space
 "at a cost of about two hours" needs qualification:
@@ -585,6 +587,113 @@ did not affect result pixels, the shallow manifest, exact-once registration, or
 the final workflow state. It should be tracked separately from the successful
 detached/shallow-Zarr integration test.
 
+## ACC three-model integration: reported September 16, 2026
+
+This successful run used normal local importer shallowing. Remote shallowing
+was not enabled. It executed the same three model types and the same number of
+model-field segmentations as Windows job 575. The datasets are equivalent in
+shape and workload, but byte-identical source pixels are not established.
+
+| Item | ACC evidence |
+|---|---|
+| Workflow | `3999cf8b-6eac-4cab-84b0-0bd4fe826d91` |
+| Slurm job | `3297294` |
+| Source | Plate 252, all 846 Images |
+| Result | Plate 403, imported exactly once |
+| Final status | `DONE`, 100%; main task remained `cisegmentation` |
+| Session lifecycle | Detached execution continued after the OMERO.web session expired |
+| Canonical recording | `CanonicalInputsRecorded`, database event row 1553 |
+| Labels | 3,384 label sets, exactly four per source Image |
+| End-to-end duration | 3h39m36s |
+
+The detailed ACC evidence is retained remotely at
+`/data/biomero/omero/deploy-omero/logs/integration-tests/2026-09-15-cisegmentation-windows-equivalent.md`.
+The integration runbook profile starts at line 844; its update was reported as
+uncommitted. Exact run timestamps, component versions, SIF digest, complete
+parameters, and reduction-trigger messages were not included in the supplied
+summary and must not be copied from the preceding one-model run by assumption.
+
+### Model execution and comparison
+
+| Model | ACC effective workers | ACC wall time | Windows workers / wall time | ACC throughput | ACC GPU / RSS probe | ACC worker adjustment |
+|---|---:|---:|---|---:|---|---|
+| Cellpose `cyto3` | 8 | 23m21s | 6 / 1h11m41s | 0.60 fields/s | 906 MiB / 1,925.8 MiB | 17 to 8 |
+| Cellpose `nuclei` | 8 | 23m35s | 7 / 2h32m57s | 0.60 fields/s | 906 MiB / 1,908.5 MiB | 17 to 8 |
+| Spotiflow `general` | 3 | 6m25s | 2 / 12m23s | 2.19 fields/s | 2,576 MiB / 1,446.1 MiB | 6 to 3 |
+
+The ACC controller performed two automatic worker reductions for each pass.
+No CUDA OOM was logged. Worker reductions must not be described as OOMs or
+ignored as though this were a fixed-worker benchmark; their triggers and
+intermediate worker counts require the detailed controller messages.
+
+| Aggregate evidence | ACC | Windows job 575 | Interpretation |
+|---|---:|---:|---|
+| Model-field segmentations | 2,538 | 2,538 | Same execution count and model mix |
+| Aggregate inference | 20,864.76s | 90,500.42s | ACC 4.34x lower on the reported metric |
+| Average inference per model-field | 8.221s | 35.658s | Same 4.34x aggregate-average ratio |
+| Combined model-pass wall time | 53m21s | 3h57m01s | Raw ratio 4.44x; worker counts differ |
+| Full Slurm job | 1h03m30s | 4h38m10s | Raw ratio 4.38x |
+
+This replaces the one-model run's misleading 9.11x aggregate comparison with
+a same-count, same-model-mix observation. It is still not an isolated GPU
+hardware benchmark: source identity, exact parameters/builds, allocation, and
+effective concurrency must also match. Per-model aggregate inference seconds
+were not emitted, so the aggregate speed ratio cannot be assigned to an
+individual model.
+
+### Integration timing
+
+| Stage | ACC three-model run | Windows/Docker control | Interpretation |
+|---|---:|---:|---|
+| Input preparation and transfer | 14m40s | About 41m12s | Both reused canonical input; includes packaging/transfer, not a measured cold export |
+| Slurm workflow | 1h03m30s | 4h38m10s | ACC substantially faster |
+| Result ZIP plus SCP | 7m30s | About 7m00s | Similar combined duration |
+| Permanent copy/extraction block | 38m44s | 1h11m34.5s | Separate copy and extraction boundaries unavailable in summary |
+| Identity calculation | 1h03m48s | 41m59.5s | ACC 21m48.5s slower |
+| Shallow normalization | 27m29s | 21m27.4s | ACC 6m01.6s slower |
+| Identity plus normalization | 1h31m17s | 1h03m26.9s | ACC about 1.44x longer |
+| OMERO registration | 1m11s | 2m23.7s | Registration only; do not compare with Windows registration-through-DONE |
+| **End to end** | **3h39m36s** | **About 7h44m** | **About 2.11x faster / 52.7% lower elapsed time** |
+
+The 4h04m24s end-to-end saving is relative to the rounded, uninterrupted
+Windows expectation, not its observed 8h08m33s recovery run. The supplied
+stage durations are rounded and do not form a complete exact timeline.
+
+Identity plus normalization accounts for about 41.6% of ACC's elapsed time.
+The faster analysis, input path, and extraction outweighed the slower shallow
+processing. Similar source counts alone do not identify the cause of that
+identity/normalization difference; input layout, label tree, storage, cache
+state, and effective identity workers need comparison.
+
+### Measured storage reduction
+
+| Measurement | ACC three-model result |
+|---|---:|
+| Result ZIP | 7,521,358,997 B |
+| Full returned Zarr | 7,902,699,055 B; 127,123 files |
+| Retained shallow Zarr | 1,271,758,230 B; 101,743 files |
+| Avoided bytes | 6,630,940,825 B (83.91%) |
+| Avoided files | 25,380 (19.96%) |
+| Canonical source reused | 27,295 files; approximately 6.18 GiB |
+| `.biomero-shallow.json` | 5,906,988 B |
+| Manifest mappings | 846 Images; 3,384 label components and paths |
+
+This is the first exact full-screen ACC reduction measurement in this ledger.
+It supersedes neither the small-result 92.6% measurement nor the inferred
+Windows full-screen 90-93% range: those are different returned payloads and
+evidence levels. Avoided pixel bytes are large while the file-count reduction
+is only about 20%, because the returned label trees remain stored.
+
+### Small-run scale context supplied alongside this result
+
+The new ACC summary also reports an 18-image cyto3-only observation: 1m03s
+input preparation, 1m41s Slurm runtime, 25.62s identity, 7.74s normalization,
+4.58s registration, and approximately 4m03s end to end. These component times
+differ from the earlier small-run record. No workflow identifier was supplied
+to establish whether this is another run or revised phase accounting, so keep
+it as a separate reported observation rather than overwrite the earlier
+2m11.32s analysis and 25.68s identity measurements.
+
 ## Archive and extraction microbenchmarks
 
 ### Full retained 846-image result
@@ -649,7 +758,7 @@ standalone helper's 846-image Slurm performance.
 The following measurements are not yet available or were not preserved:
 
 - the pre-shallow full-result bytes and exact avoided percentage for the
-  successful ACC 846-image run;
+  ACC one-model 846-image run (now measured for the three-model run);
 - the pre-shallow bytes for the successful ACC 18-image run;
 - a cold source identity run and a warm cached rerun on the same ACC Plate;
 - a full-screen run with remote shallowing enabled;
@@ -662,7 +771,10 @@ The following measurements are not yet available or were not preserved:
   or checksum comparable with ACC Plate 252;
 - a controlled ACC-versus-Windows Cellpose `cyto3` run with identical source
   pixels, channels, parameters, worker limit, and container digest;
-- the deleted ACC result-ZIP byte size.
+- the deleted ACC one-model result-ZIP byte size;
+- the three-model ACC run's component versions, exact image digest,
+  allocation, full parameters, identity-worker configuration, and controller
+  reduction triggers from its detailed remote report.
 
 Append new ACC measurements using this shape:
 
