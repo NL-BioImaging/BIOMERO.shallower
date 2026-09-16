@@ -82,7 +82,7 @@ evidence because they have changed since these runs.
 | Small 18-image Plate relative-alias failure | Not preserved | Not preserved | Not preserved | `v1.5.0-beta.4` | Not preserved | Importer version from the captured failure diagnosis; do not infer the other versions |
 | Plate 252 input-preparation failure | `v1.8.0-beta.4`; `f050d2cf42143d03cf62371528ee721e1789dc94` | `2.9.0b7` | `v2.9.0-beta.7` | `1.5.0b5` | `1.7.0b3` | Reported deployed NL-BIOMERO release plus that tag's `.env` build/deployment manifest |
 | `A-FULL-HCS` successful full integration | `1.8.0-beta.5`; `aad7fffea6d803276a8cfe57e7e233991a861ec8` | `2.9.0b6` | `v2.9.0-beta.6` | `1.5.0-beta.5` | `1.7.0b3` | Runtime versions recorded by the ACC integration test |
-| Three-model integration, workflow `3999cf8b…` | Not supplied | Not supplied | Not supplied | Not supplied | Not supplied | New ACC run; do not inherit versions from the preceding one-model run without confirmation |
+| Three-model integration, workflow `3999cf8b…` | Not supplied | Not supplied | Not supplied | `v1.5.0-beta.5`; `97a0536d644f96f9a796a81f5f00e9c230d2a634` | Not supplied | Importer revision extracted from runtime source and matched to its release tag; other components not confirmed |
 
 The Plate 252 component versions are the versions declared by the released
 NL-BIOMERO manifest and are consistent with the reported deployment. They were
@@ -609,9 +609,11 @@ shape and workload, but byte-identical source pixels are not established.
 The detailed ACC evidence is retained remotely at
 `/data/biomero/omero/deploy-omero/logs/integration-tests/2026-09-15-cisegmentation-windows-equivalent.md`.
 The integration runbook profile starts at line 844; its update was reported as
-uncommitted. Exact run timestamps, component versions, SIF digest, complete
-parameters, and reduction-trigger messages were not included in the supplied
-summary and must not be copied from the preceding one-model run by assumption.
+uncommitted. The subsequent identity investigation confirms the importer
+revision and identity/normalization timestamps below. Remaining component
+versions, SIF digest, complete parameters, and reduction-trigger messages were
+not supplied and must not be copied from the preceding one-model run by
+assumption.
 
 ### Model execution and comparison
 
@@ -694,6 +696,87 @@ to establish whether this is another run or revised phase accounting, so keep
 it as a separate reported observation rather than overwrite the earlier
 2m11.32s analysis and 25.68s identity measurements.
 
+### Identity and normalization forensic evidence: September 16
+
+A read-only ACC investigation extracted importer revision
+`97a0536d644f96f9a796a81f5f00e9c230d2a634` from the running container. That
+revision is exactly BIOMERO.importer `v1.5.0-beta.5`. The authoritative importer
+log brackets identity evaluation at 2026-09-15 19:41:07.983 to 20:44:56.004,
+followed by normalization through 21:12:25.376, in local ACC time. Consuming the
+temporary input marker accounts for only 41 ms of the normalization boundary.
+
+#### What the existing evidence establishes
+
+| Candidate | Established behavior | Historical internal time |
+|---|---|---|
+| Worker configuration | `BIOMERO_SHALLOW_ZARR_WORKERS=4`, also logged for this run; `ThreadPoolExecutor` capacity four | Peak utilization and saturation not recorded |
+| Image/label evaluation | 846 image nodes and 3,384 label nodes hashed in two successive pools | Separate batch durations not recorded |
+| Canonical matching | In-memory identity objects and dictionaries from the recorded snapshot; no canonical pixel reread or database identity lookup | Comparison duration not recorded |
+| Raw identity work | ISCC-BIO recursively walks and streams node files before decoded pixel hashing | Raw traversal/read/hash duration not recorded |
+| Decoded identity work | Importer consumes decoded `parts[0]`, not the top-level raw tree SUM | Decoding/read/hash duration not recorded |
+| Label ancestry planning | 3,384 labels against 846 image candidates: 2,862,864 ancestry checks | CPU/planning duration not recorded |
+| Normalization mutation | Duplicate arrays moved to a sibling rollback journal with `os.replace`; retained labels stay in place | Move duration not recorded |
+| Final deletion | `shutil.rmtree` walks and unlinks duplicate arrays in the rollback journal | Deletion duration not recorded |
+| Optional byte scans | `measure_bytes=False` on this lifecycle path, so recursive before/after `_tree_size` scans did not run | Not part of observed runtime |
+
+Four is pool capacity, not measured simultaneous active calls. This corrects
+any interpretation of the setting as four processes or proven saturation.
+The matching worker count rules out a simple four-versus-fewer configuration
+explanation for the ACC/Windows identity gap.
+
+ISCC-BIO's raw SUM may visit labels below an image node and those labels may be
+read again in their own identity batch, depending on `.isccignore` exclusions.
+It also precedes decoded IMAGEWALK pixel hashing. Since this importer consumes
+the decoded identity rather than the top-level raw SUM, a decoded-only identity
+entry point is a concrete optimization candidate. Its cost and safe API scope
+must be established before changing behavior; other callers may need raw SUM.
+
+Normalization rediscovers NGFF metadata, plans omissions and references,
+rewrites `.zattrs`, writes/rereads the manifest, validates arrays/labels, and
+deletes the rollback tree. Omission minimization also compares candidates with
+earlier candidates. There is no whole-result copy or final-directory promotion
+on this executed path.
+
+#### Filesystem evidence
+
+Host `/mnt/active` is bound to container `/data` and uses CIFS/SMB 3.1.1 at
+`//prod1.umcinfra.nl/data/Archief/active`. Observed options include
+`cache=strict`, `actimeo=1`, `closetimeo=1`, and 4 MiB read/write sizes.
+Returned data under `.analyzed`, canonical data under `.accprocessed`, and
+the sibling rollback journal share device ID 127. `os.replace` has no
+cross-filesystem copy fallback; such a rename would fail rather than copy.
+Temporary `/tmp/biomero-iscc-node-*` aliases point to nodes on CIFS and do not
+stage their pixels onto local `/tmp` storage.
+
+This supports remote metadata/read/delete latency as a candidate, not a
+measured cause. Outer result discovery already prunes Zarr chunks. NGFF
+metadata discovery repeats during evaluation and normalization; semantic
+guards are reread per node; upstream raw SUM and rollback deletion still
+require recursive traversal. Post-run diagnostic size/count scans are outside
+the measured lifecycle.
+
+#### Proposed timing instrumentation: not deployed
+
+ACC prepared isolated `importer-timing.patch` and `iscc-bio-timing.patch`
+against runtime source. The report states 29 synthetic/unit tests passed and
+syntax compilation passed. The patch files themselves were not supplied with
+this evidence, so their code and tests have not been independently reviewed
+locally or applied to the component repositories.
+
+The proposed importer INFO timers separate image/label identity batches,
+aggregate node time, measured active-call peaks, canonical comparisons,
+planning, moves, metadata/manifest writes, validation, and rollback deletion.
+Dependency DEBUG timers separate raw-tree work from decoded pixel work without
+adding pixel reads or recursive scans. I/O and hashing CPU time remain combined.
+Nested discovery is included in planning and must not be added twice;
+aggregate thread-seconds must not be treated as wall time.
+
+The next step is review of those two patch files and their tests, not a new
+full workflow merely to diagnose old logs. Once reviewed instrumentation is
+available, the next ordinary run can measure where the time goes. Existing
+evidence cannot assign the extra approximately 28 minutes to one cause or
+predict a saving from any proposed optimization.
+
 ## Archive and extraction microbenchmarks
 
 ### Full retained 846-image result
@@ -772,9 +855,12 @@ The following measurements are not yet available or were not preserved:
 - a controlled ACC-versus-Windows Cellpose `cyto3` run with identical source
   pixels, channels, parameters, worker limit, and container digest;
 - the deleted ACC one-model result-ZIP byte size;
-- the three-model ACC run's component versions, exact image digest,
-  allocation, full parameters, identity-worker configuration, and controller
-  reduction triggers from its detailed remote report.
+- the three-model ACC run's remaining component versions, exact image digest,
+  allocation, full parameters, and controller reduction triggers from its
+  detailed remote report;
+- internal raw-tree versus decoded identity, planning, metadata, validation,
+  move and deletion wall times; identity pool utilization was not historically
+  recorded even though four-worker capacity is confirmed.
 
 Append new ACC measurements using this shape:
 
