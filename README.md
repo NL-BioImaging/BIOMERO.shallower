@@ -8,8 +8,10 @@ for its local path.
 
 Supported adapter: contract **1**, **NGFF 0.4 / Zarr v2**, Image and Plate.
 Unknown contracts are rejected. Existing inherited labels are referenced;
-new and changed labels stay in the returned store. Unchanged images without
-labels remain full and follow the existing local passthrough decision.
+new and changed labels stay in the returned store. Label-free results can also
+reference matching canonical pixels (including pixels matching another selected
+input). Pixel deduplication removes duplicate
+arrays on disk; it never suppresses registration of the result in OMERO.
 
 ```sh
 biomero-shallower --version

@@ -288,7 +288,7 @@ def test_evaluation_rejects_invalid_identity_worker_count(tmp_path):
         raise AssertionError("invalid identity worker count was accepted")
 
 
-def test_unchanged_plate_without_labels_is_a_passthrough(tmp_path):
+def test_unchanged_plate_without_labels_is_kept_for_registration(tmp_path):
     root = tmp_path / "plate.zarr"
     _make_plate(root)
     provider = NodeIdentityProvider({
@@ -302,8 +302,8 @@ def test_unchanged_plate_without_labels_is_a_passthrough(tmp_path):
         identity_provider=provider,
     )
 
-    assert decision.unchanged_passthrough
-    assert decision.reason == "input-plate-unchanged-no-labels"
+    assert decision.outcome == "eligible"
+    assert decision.reason == "input-plate-unchanged"
     assert len(decision.image_identities) == 2
 
 
@@ -538,7 +538,7 @@ def test_changed_pixels_keep_full_even_when_artifact_matches(tmp_path):
     assert decision.reason == "pixels-changed"
 
 
-def test_unchanged_result_without_labels_is_a_passthrough(tmp_path):
+def test_unchanged_result_without_labels_is_kept_for_registration(tmp_path):
     root = tmp_path / "result.zarr"
     _make_image(root)
     provider = IdentityProvider(_identity())
@@ -549,9 +549,8 @@ def test_unchanged_result_without_labels_is_a_passthrough(tmp_path):
         identity_provider=provider,
     )
 
-    assert not decision.eligible
-    assert decision.unchanged_passthrough
-    assert decision.reason == "input-image-unchanged-no-labels"
+    assert decision.eligible
+    assert decision.reason == "input-image-unchanged"
     assert len(provider.calls) == 1
 
 
@@ -569,6 +568,23 @@ def test_changed_result_without_labels_is_kept_full(tmp_path):
     assert not decision.unchanged_passthrough
     assert decision.outcome == "keep-full"
     assert decision.reason == "pixels-changed"
+
+
+def test_output_matching_another_input_is_still_a_result(tmp_path):
+    root = tmp_path / "processed_original.zarr"
+    _make_image(root)
+    decision = evaluate_returned_zarr(
+        root,
+        _manifest(_input(0, "original.zarr", instance="ISCC:IORIGINAL"),
+                  _input(1, "processed_original.zarr", instance="ISCC:IPROCESSED")),
+        identity_provider=IdentityProvider(_identity("ISCC:IPROCESSED")),
+    )
+    assert decision.outcome == "eligible"
+    assert decision.matched_inputs[0].ordinal == 1
+    normalized = normalize_returned_zarr(decision, _manifest().workflow_id)
+    assert not (root / "0").exists()
+    assert len(normalized.collection.images) == 1
+    assert normalized.collection.images[0].label_node_paths == ()
 
 
 def test_store_finder_prunes_nested_label_zarrs(tmp_path):
@@ -738,6 +754,37 @@ def test_resolves_primary_and_label_registration_views(tmp_path):
     assert label.kind == "label"
     assert label.registration_path == (returned / "labels/cells").resolve()
     assert label.reference == primary.reference
+
+
+def test_label_free_images_and_plates_roundtrip_through_shallow_storage(tmp_path):
+    for kind in ('Image', 'Plate'):
+        import_root = tmp_path / kind / 'data'
+        group_root = import_root / 'Project A'
+        returned = import_root / 'results/result.zarr'
+        canonical = group_root / f'.processed/{kind}-1.ome.zarr'
+        if kind == 'Image':
+            _make_image(returned)
+            _make_image(canonical)
+            item = _input(0, 'result.zarr')
+            provider = IdentityProvider(_identity())
+            array_path = '0'
+        else:
+            _make_plate(returned)
+            _make_plate(canonical)
+            item = _plate_input('result.zarr')
+            provider = NodeIdentityProvider({'A/1/0': _identity('ISCC:IA', 'A/1/0'), 'B/1/0': _identity('ISCC:IB', 'B/1/0')})
+            array_path = 'A/1/0/0'
+        manifest = _manifest(item)
+        decision = evaluate_returned_zarr(returned, manifest, identity_provider=provider)
+        normalize_returned_zarr(decision, manifest.workflow_id)
+        assert not (returned / array_path).exists()
+        assert (canonical / array_path).exists()
+        roots = {'import-mount-data': import_root, 'group-0-data': group_root}
+        registration = resolve_shallow_registration(returned, storage_roots=roots, import_mount_path=import_root)
+        destination = tmp_path / kind / 'export.zarr'
+        materialize_shallow_zarr(registration.reference, destination, roots)
+        assert (destination / array_path).is_dir()
+        assert (canonical / array_path).is_dir()
 
 
 def test_resolves_source_and_label_backed_plate_registration(tmp_path):
@@ -1054,4 +1101,3 @@ def test_materializes_legacy_shallow_manifest_without_component_records(
         relative_path="results/result.zarr",
         node_path="labels/cells",
     )
-
