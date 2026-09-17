@@ -38,23 +38,31 @@ without network access.
 Pull-request builds do not push an image. Publishing requires successful tests
 for the release commit; the container is pushed only after its smoke test passes.
 
-1. Update the version in `pyproject.toml`, `biomero_shallower/__init__.py`, and
-   the Dockerfile version label together. CI rejects inconsistent versions.
-2. Review `requirements.lock`, including its exact published schema version,
+1. Review `requirements.lock`, including its exact published schema version,
    and run the tests. Publish required schema contracts before building.
-3. Merge the reviewed changes and publish a GitHub release tagged `v` followed
-   by that package version. For version `0.1.0`, use `v0.1.0`.
-4. Check the container and PyPI workflows. Confirm the versioned Docker Hub
+2. Merge the reviewed changes and publish a GitHub release with a version tag,
+   such as `v0.1.0-beta.1` for a prerelease or `v0.1.0` for a stable release.
+   Mark beta releases as prereleases in GitHub.
+3. Check the container and PyPI workflows. Confirm the versioned Docker Hub
    tag and Python distribution are both available before updating NL-BIOMERO.
-5. Set the matching helper image and tool version in the deployment, then use
+4. Set the matching helper image and tool version in the deployment, then use
    Slurm Init to acquire the image and Check Setup to verify availability.
 
-The release workflow checks that the tag matches the package/tool version.
-Equivalent prerelease spellings are supported: package version `0.1.0b1`
-can use GitHub release tag `v0.1.0-beta.1`.
-The Docker image receives the exact version tag without the leading `v`.
-Prereleases do not update `latest`; stable releases do so after smoke testing.
-Changing only the GitHub tag does not change the helper's reported tool version.
+The GitHub release tag owns the version; no source-file version bump is needed.
+Like BIOMERO core, this package uses `setuptools_scm` to derive versions from
+Git tags. Release builds explicitly use the published tag. The installed
+package metadata supplies the CLI and report tool version, and CI passes that
+same version into Docker rather than copying Git history into the image.
+
+For `v0.1.0-beta.1`, PyPI and the helper report version `0.1.0b1`, while Docker
+Hub receives `cellularimagingcf/biomero-shallower:0.1.0-beta.1`. The OCI version
+label matches the normalized package version. Prereleases do not update
+`latest`; stable releases do so after smoke testing. CI checks the built
+container's reported version and OCI label against the package version.
+
+Untagged checkouts have SCM-derived development versions. Bare Docker builds
+without a supplied SCM version use the explicit non-release fallback
+`0.0.dev0`; see [Development](development.md) for a version-aware local build.
 
 Container runtime dependencies are pinned; release builds do not take schema
 code from a moving GitHub branch or a sibling checkout. The build-context

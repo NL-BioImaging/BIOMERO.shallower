@@ -17,16 +17,21 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Use the GitHub release tag for package versioning
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_BIOMERO_SHALLOWER=$RELEASE_TAG" >> "$GITHUB_ENV"
       - name: Install test and packaging dependencies
         run: python -m pip install '.[test]' build twine
-      - name: Check package, tool, container, and release versions
+      - name: Read the installed package version
         id: version
-        env:
-          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
-        run: python tools/check_release.py
+        run: python -c "from importlib.metadata import version; print('version=' + version('biomero-shallower'))" >> "$GITHUB_OUTPUT"
       - name: Unit tests
         run: python -m pytest tests -q
       - name: Build and check distributions
@@ -59,11 +64,17 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: biomero-shallower:ci
+          build-args: |
+            SETUPTOOLS_SCM_PRETEND_VERSION=${{ needs.test.outputs.version }}
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Health and real-identity smoke tests
+        env:
+          EXPECTED_VERSION: ${{ needs.test.outputs.version }}
         run: |
+          test "$(docker run --rm --network none biomero-shallower:ci --version)" = "$EXPECTED_VERSION"
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' biomero-shallower:ci)" = "$EXPECTED_VERSION"
           docker run --rm --network none biomero-shallower:ci health
           mkdir -p "$RUNNER_TEMP/shallower-smoke"
           chmod 777 "$RUNNER_TEMP/shallower-smoke"
@@ -85,8 +96,10 @@ jobs:
           images: cellularimagingcf/biomero-shallower
           flavor: latest=false
           tags: |
-            type=raw,value=${{ needs.test.outputs.version }}
+            type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.test.outputs.version }}
       - name: Publish tested image
         if: github.event_name == 'release'
         uses: docker/build-push-action@v6
@@ -94,6 +107,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          build-args: |
+            SETUPTOOLS_SCM_PRETEND_VERSION=${{ needs.test.outputs.version }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha

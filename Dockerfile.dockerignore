@@ -5,5 +5,6 @@
 !requirements.lock
 !biomero_shallower/
 !biomero_shallower/*.py
+biomero_shallower/_version.py
 **/__pycache__
 **/*.egg-info

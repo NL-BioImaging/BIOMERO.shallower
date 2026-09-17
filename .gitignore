@@ -6,3 +6,4 @@ dist/
 build/
 .coverage
 site/
+biomero_shallower/_version.py

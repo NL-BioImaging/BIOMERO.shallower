@@ -25,7 +25,9 @@ canonical immutability, and idempotent normalization without network access.
 From the repository root in a POSIX shell:
 
 ```sh
-docker build -t biomero-shallower:local .
+helper_version=$(python -c 'from importlib.metadata import version; print(version("biomero-shallower"))')
+docker build --build-arg SETUPTOOLS_SCM_PRETEND_VERSION="$helper_version" \
+  -t biomero-shallower:local .
 docker run --rm --network none biomero-shallower:local health
 smoke_dir=$(mktemp -d)
 chmod 777 "$smoke_dir"
@@ -37,6 +39,8 @@ docker run --rm --network none \
 
 The disposable fixture directory must be writable by UID 10001. Do not use
 production data as the fixture mount. GitHub Actions runs the same smoke test.
+The build argument is derived from the installed checkout, not a manually
+maintained version. Release CI derives it from the GitHub release tag.
 
 ## Dependency updates
 
