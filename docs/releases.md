@@ -56,9 +56,12 @@ same version into Docker rather than copying Git history into the image.
 
 For `v0.1.0-beta.1`, PyPI and the helper report version `0.1.0b1`, while Docker
 Hub receives `cellularimagingcf/biomero-shallower:0.1.0-beta.1`. The OCI version
-label matches the normalized package version. Prereleases do not update
-`latest`; stable releases do so after smoke testing. CI checks the built
-container's reported version and OCI label against the package version.
+label matches the normalized package version. Stable releases publish the full
+version, a moving major/minor alias, and `latest`; for example, `v0.1.0`
+publishes `0.1.0`, `0.1`, and `latest` after smoke testing. Prereleases publish
+only their full version and do not update the stable aliases. Pin the full
+prerelease image tag when deploying a beta. CI checks the built container's
+reported version and OCI label against the package version.
 
 Untagged checkouts have SCM-derived development versions. Bare Docker builds
 without a supplied SCM version use the explicit non-release fallback
