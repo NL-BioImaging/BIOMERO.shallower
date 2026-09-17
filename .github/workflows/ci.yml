@@ -69,8 +69,8 @@ jobs:
           chmod 777 "$RUNNER_TEMP/shallower-smoke"
           docker run --rm --network none \
             -v "$RUNNER_TEMP/shallower-smoke:/fixture" \
-            -v "$PWD/tools:/tools:ro" \
-            --entrypoint python biomero-shallower:ci /tools/mounted_smoke.py
+            -v "$PWD/tests:/tests:ro" \
+            --entrypoint python biomero-shallower:ci /tests/container_smoke.py
       - name: Log in to Docker Hub
         if: github.event_name == 'release'
         uses: docker/login-action@v3

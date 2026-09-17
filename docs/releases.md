@@ -33,7 +33,8 @@ is `https://nl-bioimaging.github.io/BIOMERO.shallower/`; add it to the repositor
 
 The CI workflow runs unit tests and builds the wheel and source distribution.
 The container workflow builds a Linux/amd64 image, runs `health`, and executes
-the mounted real-identity normalization smoke test without network access.
+the real-identity normalization smoke test in `tests/container_smoke.py`
+without network access.
 Pull-request builds do not push an image. Publishing requires successful tests
 for the release commit; the container is pushed only after its smoke test passes.
 

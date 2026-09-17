@@ -102,3 +102,14 @@ with independent parity, rollback, and import-validation tests. Dispatch it from
 1 behavior stable. The historical manifest model string `rfc8-shallow-copy` is
 preserved for compatibility; this release implements no speculative RFC8/NGFF
 migrations.
+
+## Python API
+
+These filesystem interfaces are shared with BIOMERO.importer. They do not
+accept OMERO connections.
+
+::: biomero_shallower.operations
+    options:
+      members:
+        - normalize
+        - validate_report

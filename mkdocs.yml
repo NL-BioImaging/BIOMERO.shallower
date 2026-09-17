@@ -31,9 +31,7 @@ markdown_extensions:
   - pymdownx.superfences
 
 nav:
-  - Home: index.md
-  - Installation and commands: commands.md
+  - Overview and usage: index.md
   - Architecture and recovery: architecture.md
-  - Benchmarks: benchmarks.md
+  - Development: development.md
   - Releases and publication: releases.md
-  - Python API: api.md
