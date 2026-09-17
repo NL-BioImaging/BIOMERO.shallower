@@ -9,6 +9,8 @@ site_dir: site
 
 theme:
   name: material
+  logo: https://raw.githubusercontent.com/NL-BioImaging/OMERO.biomero/refs/tags/v1.2.1/webapp/src/img/biomero-logo.svg
+  favicon: https://raw.githubusercontent.com/NL-BioImaging/OMERO.biomero/refs/tags/v1.2.1/webapp/src/img/biomero-logo.svg
   features:
     - navigation.sections
     - navigation.top
