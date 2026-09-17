@@ -1,77 +1,47 @@
-# BIOMERO.shallower
+# <img src="https://raw.githubusercontent.com/NL-BioImaging/OMERO.biomero/refs/tags/v1.2.1/webapp/src/img/biomero-logo.svg" alt="BIOMERO" height="28" style="height:28px; width:auto; vertical-align:middle;"> BIOMERO.shallower
 
-A filesystem-only, versioned result normalizer for BIOMERO. It compares returned
-OME-Zarr pixels and labels with the workflow's canonical input identities, then
-uses the shared shallow representation to omit duplicate arrays. It requires
-no OMERO connection or credentials. The importer uses this same implementation
-for its local path.
+> 🚀 **This package is part of <img src="https://raw.githubusercontent.com/NL-BioImaging/OMERO.biomero/refs/tags/v1.2.1/webapp/src/img/biomero-logo.svg" alt="BIOMERO" height="16" style="height:16px; width:auto; vertical-align:middle;"> BIOMERO 2.0** — For complete deployment and FAIR infrastructure setup, start with the [**NL-BIOMERO Documentation**](https://nl-bioimaging.github.io/NL-BIOMERO/) 📖
 
-Supported adapter: contract **1**, **NGFF 0.4 / Zarr v2**, Image and Plate.
-Unknown contracts are rejected. Existing inherited labels are referenced;
-new and changed labels stay in the returned store. Unchanged images without
-labels remain full and follow the existing local passthrough decision.
+A filesystem-only library and CPU container for shallow-Zarr normalization.
+It compares returned images and labels with the workflow's canonical inputs,
+replaces verified duplicate arrays with references, and retains new or changed
+data. No OMERO connection or credentials are required.
+
+BIOMERO.importer uses the Python package locally. BIOMERO core runs the same
+implementation on Slurm before archiving and transferring results.
+Deduplication never suppresses result registration in OMERO.
+
+Supports **contract 1, NGFF 0.4 / Zarr v2 Images and Plates**. Shallow storage
+is optional; installing this package does not enable it. When shallow storage
+is enabled, remote normalization is preferred unless explicitly disabled.
+
+## Quick start
+
+Python 3.11 or newer:
 
 ```sh
+pip install 'biomero-shallower[identity]'
 biomero-shallower --version
-biomero-shallower health
 biomero-shallower inspect --returned-zarr /results/result.zarr
-biomero-shallower normalize \
-  --returned-zarr /results/result.zarr \
-  --canonical-inputs /inputs/canonical.json \
-  --report /results/report.json --contract-version 1 \
-  --identity-workers 4 --failure-policy keep-full \
-  --image registry.example/biomero-shallower:0.1.0
-biomero-shallower verify \
-  --returned-zarr /results/result.zarr \
-  --canonical-inputs /inputs/canonical.json \
-  --report /results/verification.json --contract-version 1 \
-  --image registry.example/biomero-shallower:0.1.0
 ```
 
-`normalize` generates complete image/label identities before committing.
-`verify` validates a committed receipt and manifest without hashing pixels.
-Exit **0** means a safe terminal result (normalized, kept full, or skipped);
-exit **2** means invalid input, unsupported contract, or unresolved recovery.
-JSON logs/results distinguish these outcomes. `health` imports the identity
-provider without requiring image data.
-
-The durable report is `.biomero-shallow-report.json` inside the store;
-`--report` writes an additional machine-readable copy. It records tool/image,
-contracts, input snapshot, eligibility, canonical and retained components,
-timings, task/job provenance, and terminal result. No Slurm absolute paths occur
-in the collection or report. `normalize-tree` is the internal batch interface;
-it discovers outermost stores and emits `.biomero-shallow-batch.json` with
-checksummed receipts. Other workflow outputs remain in place.
-
-## Build and test
-
-Use sibling `biomero-schema` source containing the remote receipt contracts.
-The schema wheel is built as `0.2.1.dev1`; publish a matching release before
-deploying package requirements through a public index. The schema version is
-set by a build environment variable without modifying its project metadata.
-
-From the common workspace parent:
+Container:
 
 ```sh
-docker build -f biomero-shallower/Dockerfile -t biomero-shallower:0.1.0 .
-docker run --rm --network none biomero-shallower:0.1.0 health
-mkdir -p /tmp/shallower-smoke
-docker run --rm --network none \
-  -v /tmp/shallower-smoke:/fixture \
-  -v "$PWD/biomero-shallower/tools:/tools:ro" \
-  --entrypoint python biomero-shallower:0.1.0 /tools/mounted_smoke.py
+docker run --rm --network none cellularimagingcf/biomero-shallower:0.1.0 health
 ```
 
-The smoke fixture mount must be writable by UID 10001. Use an empty directory
-for each run. The production image pins all transitive CPU dependencies in
-`requirements.lock`; its build context allowlist excludes credentials and data.
-The upstream BioIO dependency includes filesystem reader infrastructure, but
-the image includes no OMERO, database client, Java, GPU runtime, or credentials.
+## Documentation
 
-For local unit tests, install the sibling schema and this package in a Python
-3.12 virtual environment, then run `python -m pytest tests -q`. Install the
-`identity` extra for real hashing. The tests retain the original importer's
-Image/Plate fixtures and decision/manifest assertions.
+- [Usage and commands](https://nl-bioimaging.github.io/BIOMERO.shallower/)
+- [Architecture, recovery and Python API](https://nl-bioimaging.github.io/BIOMERO.shallower/architecture/)
+- [Development and testing](https://nl-bioimaging.github.io/BIOMERO.shallower/development/)
+- [Release setup](https://nl-bioimaging.github.io/BIOMERO.shallower/releases/)
 
-See [architecture and recovery](docs/architecture.md) for the transaction and
-trust boundaries, and [benchmarks](docs/benchmarks.md) for measurement commands.
+For local tests, install `.[test]` in a virtual environment and run
+`python -m pytest tests -q`. GitHub Actions runs unit tests, container smoke
+tests and a strict MkDocs build. GitHub releases publish the package and image.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE). Dependencies retain their own licences.

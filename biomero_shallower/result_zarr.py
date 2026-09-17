@@ -978,9 +978,9 @@ def normalize_returned_zarr(
     nodes = discover_ngff_nodes(root)
     image_nodes = tuple(node for node in nodes if node.role == "image")
     label_nodes = tuple(node for node in nodes if node.role == "label")
-    if not image_nodes or not label_nodes:
+    if not image_nodes:
         raise PixelIdentityError(
-            "Returned stores require image nodes and declared labels"
+            "Returned stores require image nodes"
         )
     returned_by_path = {
         identity.node_path: identity
@@ -1317,15 +1317,9 @@ def evaluate_returned_zarr(
                 reason = "no-input-identity-match"
 
     unchanged = reason == unchanged_reason
-    if unchanged and not label_paths:
-        return ReturnedZarrDecision(
-            store_path=root,
-            outcome="skip-passthrough",
-            reason=f"{unchanged_reason}-no-labels",
-            image_identities=returned_identities,
-            matched_inputs=matches,
-        )
-    if not unchanged or not label_paths:
+    # Identity controls pixel storage, never whether the returned object is
+    # a result. Label-free results can reference canonical pixels as well.
+    if not unchanged:
         return ReturnedZarrDecision(
             store_path=root,
             outcome="keep-full",

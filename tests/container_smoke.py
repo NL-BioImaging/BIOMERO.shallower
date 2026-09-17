@@ -11,6 +11,7 @@ import numpy as np
 import zarr
 
 from biomero_schema.zarr import CanonicalInputManifest, CanonicalInput, CanonicalZarrSource
+from biomero_shallower import __version__
 from biomero_shallower.pixel_identity import IsccBioIdentityProvider, read_zarr_v2_semantic_guard
 
 root = Path('/fixture')
@@ -64,7 +65,7 @@ before = snapshot(canonical)
 os.environ['SLURM_JOB_ID'] = '123'
 command = ['biomero-shallower', 'normalize-tree', '--returned-zarr', str(returned.parent),
            '--canonical-inputs', str(root / 'input.json'), '--contract-version', '1',
-           '--report', str(root / 'batch.json'), '--image', 'biomero-shallower:0.1.0',
+           '--report', str(root / 'batch.json'), '--image', f'biomero-shallower:{__version__}',
            '--task-id', 'cccccccc-cccc-cccc-cccc-cccccccccccc']
 subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
 assert not (returned / '0').exists()
