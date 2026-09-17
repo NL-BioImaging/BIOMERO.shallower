@@ -8,8 +8,10 @@ importer. Registration planning and managed-source resolution retain their
 established semantics.
 
 `biomero` acquires a versioned SIF through its image runner and starts a CPU job.
-`biomero-scripts` selects the stage only when the administrator flag and existing
-shallow importer capabilities are enabled. It runs before ZIP creation. The
+`biomero-scripts` selects the stage only when shallow storage and compatible
+importer capabilities are enabled. Within that enabled feature, remote
+normalization is preferred unless the administrator selects the local path
+with `BIOMERO_REMOTE_SHALLOW_ZARR=false`. It runs before ZIP creation. The
 import order carries receipts read from completed event-sourced normalizer
 tasks, rather than trusting a batch file found in a workflow archive.
 
@@ -83,6 +85,11 @@ writers, configured container images, and the Slurm account/filesystem. Workflow
 must not forge reserved `.biomero-*` metadata. It is not an attestation protocol
 against a malicious workflow sharing that account. Deployments requiring that
 threat model need isolated ownership and signed receipts before enabling it.
+
+The report formats and receipt compatibility rules are documented in
+[BIOMERO Schema](https://nl-bioimaging.github.io/biomero-schema/remote-shallower-contracts/).
+For deployment flags and image initialization, use the
+[NL-BIOMERO administration guide](https://nl-bioimaging.github.io/NL-BIOMERO/master/sysadmin/remote-shallower.html).
 
 The archive extension point is after normalizer completion and before
 `zip_data_on_slurm_server`; a later archive adapter can replace ZIP independently.

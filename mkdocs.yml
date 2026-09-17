@@ -1,0 +1,39 @@
+site_name: BIOMERO.shallower
+site_description: Filesystem-only shallow-Zarr normalization for BIOMERO
+site_url: https://nl-bioimaging.github.io/BIOMERO.shallower/
+repo_url: https://github.com/NL-BioImaging/BIOMERO.shallower
+repo_name: NL-BioImaging/BIOMERO.shallower
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ['.']
+          options:
+            docstring_style: google
+            show_root_heading: true
+            show_source: false
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Installation and commands: commands.md
+  - Architecture and recovery: architecture.md
+  - Benchmarks: benchmarks.md
+  - Releases and publication: releases.md
+  - Python API: api.md

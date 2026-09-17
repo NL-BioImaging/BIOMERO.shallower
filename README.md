@@ -1,5 +1,12 @@
 # BIOMERO.shallower
 
+> This package is part of **BIOMERO 2.0**. For complete deployment and
+> infrastructure configuration, start with the
+> [NL-BIOMERO documentation](https://nl-bioimaging.github.io/NL-BIOMERO/).
+
+[Documentation](https://nl-bioimaging.github.io/BIOMERO.shallower/) ·
+[Architecture and recovery](https://nl-bioimaging.github.io/BIOMERO.shallower/architecture/)
+
 A filesystem-only, versioned result normalizer for BIOMERO. It compares returned
 OME-Zarr pixels and labels with the workflow's canonical input identities, then
 uses the shared shallow representation to omit duplicate arrays. It requires
@@ -13,6 +20,29 @@ reference matching canonical pixels (including pixels matching another selected
 input). Pixel deduplication removes duplicate
 arrays on disk; it never suppresses registration of the result in OMERO.
 
+## Integration with NL-BIOMERO
+
+BIOMERO core runs this helper as a CPU-only Slurm job before archiving and
+transferring workflow results. BIOMERO.scripts forwards its trusted receipts,
+and BIOMERO.importer validates them before registering the shallow results.
+The importer also uses this package for local normalization.
+
+Shallow storage remains an optional feature. When shallow storage is enabled,
+remote normalization is the preferred path; administrators can select local
+normalization instead. Installing this package alone does not enable either
+path. See the
+[remote shallower administration guide](https://nl-bioimaging.github.io/NL-BIOMERO/master/sysadmin/remote-shallower.html)
+for feature flags, image acquisition, resources, and recovery.
+
+## Installation and commands
+
+Python 3.11 or newer is required. Install the `identity` extra when computing
+real pixel identities:
+
+```sh
+pip install 'biomero-shallower[identity]'
+```
+
 ```sh
 biomero-shallower --version
 biomero-shallower health
@@ -22,12 +52,12 @@ biomero-shallower normalize \
   --canonical-inputs /inputs/canonical.json \
   --report /results/report.json --contract-version 1 \
   --identity-workers 4 --failure-policy keep-full \
-  --image registry.example/biomero-shallower:0.1.0
+  --image cellularimagingcf/biomero-shallower:0.1.0
 biomero-shallower verify \
   --returned-zarr /results/result.zarr \
   --canonical-inputs /inputs/canonical.json \
   --report /results/verification.json --contract-version 1 \
-  --image registry.example/biomero-shallower:0.1.0
+  --image cellularimagingcf/biomero-shallower:0.1.0
 ```
 
 `normalize` generates complete image/label identities before committing.
@@ -47,20 +77,20 @@ checksummed receipts. Other workflow outputs remain in place.
 
 ## Build and test
 
-Use sibling `biomero-schema` source containing the remote receipt contracts.
-The schema wheel is built as `0.2.1.dev1`; publish a matching release before
-deploying package requirements through a public index. The schema version is
-set by a build environment variable without modifying its project metadata.
+The container builds from this repository and installs the published schema
+contracts. Its CPU runtime dependencies, including `biomero-schema==0.2.1b1`,
+are pinned in `requirements.lock`.
 
-From the common workspace parent:
+From this repository:
 
 ```sh
-docker build -f biomero-shallower/Dockerfile -t biomero-shallower:0.1.0 .
+docker build -t biomero-shallower:0.1.0 .
 docker run --rm --network none biomero-shallower:0.1.0 health
 mkdir -p /tmp/shallower-smoke
+chmod 777 /tmp/shallower-smoke
 docker run --rm --network none \
   -v /tmp/shallower-smoke:/fixture \
-  -v "$PWD/biomero-shallower/tools:/tools:ro" \
+  -v "$PWD/tools:/tools:ro" \
   --entrypoint python biomero-shallower:0.1.0 /tools/mounted_smoke.py
 ```
 
@@ -70,10 +100,31 @@ for each run. The production image pins all transitive CPU dependencies in
 The upstream BioIO dependency includes filesystem reader infrastructure, but
 the image includes no OMERO, database client, Java, GPU runtime, or credentials.
 
-For local unit tests, install the sibling schema and this package in a Python
-3.12 virtual environment, then run `python -m pytest tests -q`. Install the
+For local unit tests, install `.[test]` in a repository-local Python 3.12
+virtual environment, then run `python -m pytest tests -q`. Install the
 `identity` extra for real hashing. The tests retain the original importer's
 Image/Plate fixtures and decision/manifest assertions.
 
 See [architecture and recovery](docs/architecture.md) for the transaction and
 trust boundaries, and [benchmarks](docs/benchmarks.md) for measurement commands.
+See [release setup](docs/releases.md) for Docker Hub credentials, package
+publication, version checks, and the tested release workflow.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE). Third-party dependencies retain their own
+licences.
+
+## Documentation development
+
+In the repository-local virtual environment:
+
+```sh
+python -m pip install -e . -r docs/requirements.txt
+python -m mkdocs serve
+python -m mkdocs build --strict
+```
+
+Pull requests build the documentation; pushes to `main` publish GitHub Pages.
+Select **Settings → Pages → Source → GitHub Actions** for this repository.
+Generated `site/` output is not committed.

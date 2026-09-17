@@ -6,12 +6,15 @@ build-backend = "setuptools.build_meta"
 name = "biomero-shallower"
 version = "0.1.0"
 description = "Filesystem normalization of BIOMERO returned OME-Zarr"
+readme = "README.md"
 requires-python = ">=3.11"
-license = "GPL-2.0-only"
-dependencies = ["biomero-schema>=0.2.1.dev1,<0.4", "numpy>=1.26.4,<3"]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["biomero-schema>=0.2.1b1,<0.4", "numpy>=1.26.4,<3"]
 
 [project.urls]
 Repository = "https://github.com/NL-BioImaging/BIOMERO.shallower"
+Documentation = "https://nl-bioimaging.github.io/BIOMERO.shallower/"
 
 [project.optional-dependencies]
 identity = ["iscc-bio[ome-zarr]==0.2.0"]

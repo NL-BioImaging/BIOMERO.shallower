@@ -1,0 +1,117 @@
+name: Test and publish
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test and packaging dependencies
+        run: python -m pip install '.[test]' build twine
+      - name: Check package, tool, container, and release versions
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+        run: python tools/check_release.py
+      - name: Unit tests
+        run: python -m pytest tests -q
+      - name: Build and check distributions
+        run: |
+          python -m build
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/*
+
+  container:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Check publishing credentials
+        if: github.event_name == 'release'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          test -n "$DOCKERHUB_USERNAME" || { echo 'Configure DOCKERHUB_USERNAME in repository or organization Actions secrets.' >&2; exit 1; }
+          test -n "$DOCKERHUB_TOKEN" || { echo 'Configure DOCKERHUB_TOKEN in repository or organization Actions secrets.' >&2; exit 1; }
+      - name: Build image for smoke testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: biomero-shallower:ci
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Health and real-identity smoke tests
+        run: |
+          docker run --rm --network none biomero-shallower:ci health
+          mkdir -p "$RUNNER_TEMP/shallower-smoke"
+          chmod 777 "$RUNNER_TEMP/shallower-smoke"
+          docker run --rm --network none \
+            -v "$RUNNER_TEMP/shallower-smoke:/fixture" \
+            -v "$PWD/tools:/tools:ro" \
+            --entrypoint python biomero-shallower:ci /tools/mounted_smoke.py
+      - name: Log in to Docker Hub
+        if: github.event_name == 'release'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Image tags and labels
+        if: github.event_name == 'release'
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: cellularimagingcf/biomero-shallower
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.test.outputs.version }}
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+      - name: Publish tested image
+        if: github.event_name == 'release'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+
+  publish-package:
+    if: github.event_name == 'release'
+    needs: [test, container]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist
+      - name: Check publishing credentials
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: test -n "$PYPI_API_TOKEN" || { echo 'Configure PYPI_API_TOKEN in repository or organization Actions secrets.' >&2; exit 1; }
+      - name: Publish Python package
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
