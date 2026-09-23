@@ -98,10 +98,11 @@ The archive extension point is after normalizer completion and before
 
 Add explicit versioned models to `biomero-schema`, then a filesystem adapter
 with independent parity, rollback, and import-validation tests. Dispatch it from
-`operations.ADAPTERS` and expose its accepted version in CLI choices. Keep version
-1 behavior stable. The historical manifest model string `rfc8-shallow-copy` is
-preserved for compatibility; this release implements no speculative RFC8/NGFF
-migrations.
+`operations.ADAPTERS` and expose its accepted version in CLI choices. Shallow
+manifest schema 2 represents scientific image/label relationships separately
+from managed-storage bindings. The current writer still targets NGFF 0.4 / Zarr
+v2 and does not claim RFC-8 compliance; a future adapter can project the graph
+once an accepted collections profile and compatible stores are available.
 
 ## Python API
 

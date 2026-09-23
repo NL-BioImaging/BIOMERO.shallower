@@ -351,13 +351,21 @@ def test_normalizes_plate_images_and_retains_image_level_label(tmp_path):
     assert not (root / "A/1/0/0").exists()
     assert not (root / "B/1/0/0").exists()
     assert (root / label_path).is_dir()
-    assert len(normalized.collection.images) == 2
+    assert len(normalized.manifest.collection.images) == 2
     images = {
-        image.image_node_path: image
-        for image in normalized.collection.images
+        image.node_path: image
+        for image in normalized.manifest.collection.images
     }
-    assert images["A/1/0"].label_node_paths == (label_path,)
-    assert images["B/1/0"].label_node_paths == ()
+    labels_by_image = {
+        image.node_path: tuple(
+            label.node_path
+            for label in normalized.manifest.collection.labels
+            if label.source_image_id == image.node_id
+        )
+        for image in images.values()
+    }
+    assert labels_by_image["A/1/0"] == (label_path,)
+    assert labels_by_image["B/1/0"] == ()
 
 
 def test_normalizes_renamed_plate_output_by_pixel_identity(tmp_path):
@@ -382,7 +390,7 @@ def test_normalizes_renamed_plate_output_by_pixel_identity(tmp_path):
 
     assert decision.eligible
     assert decision.matched_inputs[0].transfer_artifact == "plate.zarr"
-    assert normalized.collection.transfer_artifact == root.name
+    assert normalized.manifest.transfer_artifact == root.name
     assert (root / ".biomero-shallow.json").is_file()
     assert not (root / "A/1/0/0").exists()
     assert not (root / "B/1/0/0").exists()
@@ -583,8 +591,8 @@ def test_output_matching_another_input_is_still_a_result(tmp_path):
     assert decision.matched_inputs[0].ordinal == 1
     normalized = normalize_returned_zarr(decision, _manifest().workflow_id)
     assert not (root / "0").exists()
-    assert len(normalized.collection.images) == 1
-    assert normalized.collection.images[0].label_node_paths == ()
+    assert len(normalized.manifest.collection.images) == 1
+    assert normalized.manifest.collection.labels == ()
 
 
 def test_store_finder_prunes_nested_label_zarrs(tmp_path):
@@ -623,10 +631,15 @@ def test_normalization_transaction_keeps_labels_and_omits_image_chunks(
     manifest = json.loads(
         (root / ".biomero-shallow.json").read_text(encoding="utf-8")
     )
-    assert manifest["model"] == "rfc8-shallow-copy"
-    assert manifest["images"][0]["source"]["sourceObjectId"] == 1
-    assert manifest["images"][0]["labelComponents"][0]["source"] is None
-    assert manifest["images"][0]["labelComponents"][0][
+    assert manifest["format"] == "biomero-shallow-zarr"
+    assert manifest["schema"] == 2
+    assert manifest["collection"]["images"][0]["nodePath"] == "."
+    assert manifest["collection"]["labels"][0]["nodePath"] == "labels/cells"
+    assert manifest["bindings"]["images"][0]["source"][
+        "sourceObjectId"
+    ] == 1
+    assert manifest["bindings"]["labels"][0]["component"]["source"] is None
+    assert manifest["bindings"]["labels"][0]["component"][
         "pixelIdentity"
     ]["role"] == "label"
     assert "multiscales" not in json.loads(
@@ -1049,55 +1062,3 @@ def test_materializes_whole_shallow_plate_with_all_image_labels(tmp_path):
         "B/1/0/labels/cells",
     }
     assert all(label.source is not None for label in result.labels)
-
-
-def test_materializes_legacy_shallow_manifest_without_component_records(
-    tmp_path,
-):
-    import_root = tmp_path / "data"
-    group_root = import_root / "Project A"
-    canonical = group_root / ".processed/Image-1.ome.zarr"
-    returned = import_root / "results/result.zarr"
-    _make_image(canonical)
-    _make_image(returned, labels=("cells",))
-    label_chunk = returned / "labels/cells/0/0.0.0.0"
-    label_chunk.write_bytes(b"legacy-cells")
-    decision = evaluate_returned_zarr(
-        returned,
-        _manifest(_input(0, "result.zarr")),
-        identity_provider=IdentityProvider(_identity()),
-    )
-    normalize_returned_zarr(
-        decision,
-        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-    )
-    manifest_path = returned / ".biomero-shallow.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["images"][0].pop("labelComponents")
-    _write_json(manifest_path, manifest)
-    roots = {
-        "import-mount-data": import_root,
-        "group-0-data": group_root,
-    }
-    registration = resolve_shallow_registration(
-        returned / "labels/cells",
-        storage_roots=roots,
-        import_mount_path=import_root,
-    )
-    destination = tmp_path / "full.zarr"
-
-    result = materialize_shallow_zarr(
-        registration.reference,
-        destination,
-        roots,
-        identity_provider=IdentityProvider(_identity()),
-    )
-
-    assert (
-        destination / "labels/cells/0/0.0.0.0"
-    ).read_bytes() == b"legacy-cells"
-    assert result.labels[0].source == ManagedZarrNode(
-        storage_root="import-mount-data",
-        relative_path="results/result.zarr",
-        node_path="labels/cells",
-    )

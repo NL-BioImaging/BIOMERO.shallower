@@ -7,7 +7,11 @@ and retains new or changed arrays. No OMERO connection or credentials are
 required. The importer uses the same implementation for local normalization;
 BIOMERO core runs the CPU-only container on Slurm for remote normalization.
 
-The initial adapter supports contract 1, NGFF 0.4 / Zarr v2 Images and Plates.
+The initial adapter accepts canonical-input contract 1 and writes shallow
+manifest schema 2 for NGFF 0.4 / Zarr v2 Images and Plates. The output keeps
+the portable image/label graph separate from BIOMERO storage and identity
+bindings. It is designed for a future standards adapter, but is not itself an
+RFC-8 store.
 Deduplication never suppresses registration of the result in OMERO.
 Shallow storage is optional: installing this package does not enable it.
 When shallow storage is enabled, remote normalization is preferred unless
@@ -28,7 +32,7 @@ biomero-shallower health
 ```
 
 The package requires published receipt-capable schema contracts,
-`biomero-schema>=0.2.1b1,<0.4`. The container pins the complete CPU identity
+`biomero-schema>=0.3.0b1,<0.4`. The container pins the complete CPU identity
 runtime in `requirements.lock`.
 
 ## Normalize one result

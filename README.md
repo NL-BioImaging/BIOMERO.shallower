@@ -11,9 +11,13 @@ BIOMERO.importer uses the Python package locally. BIOMERO core runs the same
 implementation on Slurm before archiving and transferring results.
 Deduplication never suppresses result registration in OMERO.
 
-Supports **contract 1, NGFF 0.4 / Zarr v2 Images and Plates**. Shallow storage
-is optional; installing this package does not enable it. When shallow storage
-is enabled, remote normalization is preferred unless explicitly disabled.
+Supports canonical-input contract 1 and writes BIOMERO shallow-manifest schema
+2 for NGFF 0.4 / Zarr v2 Images and Plates. The schema-2 manifest separates
+the portable image/label graph from BIOMERO storage bindings so it can be
+projected to future collection standards without presenting today's private
+format as RFC-8. Shallow storage is optional; installing this package does not
+enable it. When shallow storage is enabled, remote normalization is preferred
+unless explicitly disabled.
 
 ## Quick start
 
