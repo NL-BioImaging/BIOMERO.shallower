@@ -28,6 +28,7 @@ from biomero_schema.zarr import (
     ZarrLabelComponent,
 )
 
+from . import __version__
 from .transaction import write_json
 
 
@@ -162,6 +163,7 @@ def _upgrade_report_v1(value: dict, manifest: ShallowManifest):
     upgraded.update({
         "schema": 2,
         "outputContract": 2,
+        "toolVersion": __version__,
         "manifest": manifest.to_dict(),
     })
     return ShallowOperationReport.from_dict(upgraded)

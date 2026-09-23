@@ -12,6 +12,7 @@ from biomero_schema.zarr import (
     ZarrLabelComponent,
 )
 from biomero_shallower.cli import main
+from biomero_shallower import __version__
 from biomero_shallower.migration import (
     migrate_shallow_store_v1,
     upgrade_manifest_v1,
@@ -98,6 +99,7 @@ def test_migrates_schema_1_store_and_keeps_rollback_copy(tmp_path):
     report = validate_report(root, canonical)
     assert report.schema_version == 2
     assert report.output_contract == 2
+    assert report.tool_version == __version__
     assert report.manifest == manifest
     assert len(result.report_sha256) == 64
     attrs = json.loads((root / ".zattrs").read_text(encoding="utf-8"))
