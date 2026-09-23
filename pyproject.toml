@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "biomero-shallower"
 dynamic = ["version"]
-description = "Filesystem normalization of BIOMERO returned OME-Zarr"
+description = "Filesystem shallowing of BIOMERO returned OME-Zarr"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

@@ -1,9 +1,9 @@
 # Releases and publication
 
 BIOMERO.shallower publishes a Python package and a CPU-only Docker image.
-The importer uses the package for local normalization and report validation;
+The importer uses the package for local shallowing and report validation;
 BIOMERO core acquires the helper image through Apptainer or Singularity for
-remote normalization. Both must identify the same tool version.
+remote shallowing. Both must identify the same tool version.
 
 ## One-time repository configuration
 

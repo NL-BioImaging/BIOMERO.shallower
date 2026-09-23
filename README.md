@@ -2,22 +2,20 @@
 [![Test and publish](https://github.com/NL-BioImaging/BIOMERO.shallower/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NL-BioImaging/BIOMERO.shallower/actions/workflows/ci.yml)
 > 🚀 **This package is part of <img src="https://raw.githubusercontent.com/NL-BioImaging/OMERO.biomero/refs/tags/v1.2.1/webapp/src/img/biomero-logo.svg" alt="BIOMERO" height="16" style="height:16px; width:auto; vertical-align:middle;"> BIOMERO 2.0** — For complete deployment and FAIR infrastructure setup, start with the [**NL-BIOMERO Documentation**](https://nl-bioimaging.github.io/NL-BIOMERO/) 📖
 
-A filesystem-only library and CPU container for shallow-Zarr normalization.
-It compares returned images and labels with the workflow's canonical inputs,
-replaces verified duplicate arrays with references, and retains new or changed
-data. No OMERO connection or credentials are required.
+A filesystem-only library and CPU container for shallow Zarr. It compares
+returned images and labels with the workflow's canonical inputs, replaces
+verified duplicate arrays with references, and retains new or changed data.
+No OMERO connection or credentials are required.
 
 BIOMERO.importer uses the Python package locally. BIOMERO core runs the same
 implementation on Slurm before archiving and transferring results.
 Deduplication never suppresses result registration in OMERO.
 
-Supports canonical-input contract 1 and writes BIOMERO shallow-manifest schema
-2 for NGFF 0.4 / Zarr v2 Images and Plates. The schema-2 manifest separates
-the portable image/label graph from BIOMERO storage bindings so it can be
-projected to future collection standards without presenting today's private
-format as RFC-8. Shallow storage is optional; installing this package does not
-enable it. When shallow storage is enabled, remote normalization is preferred
-unless explicitly disabled.
+The package writes the experimental BIOMERO shallow-manifest schema 2 for NGFF
+0.4 / Zarr v2 Images and Plates. This private format is not RFC-8. Its portable
+image/label graph is separate from BIOMERO storage bindings so a future
+standards adapter can reuse it. Installing the package does not enable shallow
+storage; deployment configuration chooses local or remote shallowing.
 
 ## Quick start
 
@@ -87,15 +85,10 @@ implicitly. Upgrade a settled store explicitly:
 biomero-shallower migrate-v1 --returned-zarr /results/result.ome.zarr
 ```
 
-The command converts the sidecar, operation report, and image-node metadata to
-schema 2 and retains the original files in a sibling
-`.result.ome.zarr.biomero-schema1-backup` directory. Do not run it during an
-active transfer or import: changing the report invalidates an outstanding
-remote receipt checksum. It does not update schema-1 references already stored
-as OMERO MapAnnotations. In a complete BIOMERO deployment, use the
-administrator script **BIOMERO Migrate Shallow Storage** instead: it coordinates
-the filesystem migration with the linked OMERO references and retains recovery
-files for both.
+For standalone stores, this converts the sidecar, report, and image metadata
+and keeps a sibling backup. Do not run it during an active transfer or import.
+For stores registered in OMERO, use the administrator script **BIOMERO Migrate
+Shallow Storage** so the filesystem and OMERO references are updated together.
 
 See the [reconstruction guide](https://nl-bioimaging.github.io/NL-BIOMERO/developer/biomero-shallow-zarr.html#reconstruct-shallow-zarr-on-disk)
 for details. A shallow result itself is not a self-contained OME-Zarr for

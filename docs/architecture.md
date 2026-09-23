@@ -1,7 +1,7 @@
 # Architecture, transactions, and recovery
 
 `biomero-schema` owns only portable contracts. `biomero-shallower` owns NGFF
-discovery, ISCC-BIO filesystem identity and move-journal normalization.
+discovery, ISCC-BIO filesystem identity and transactional shallowing.
 `biomero-importer.utils.result_zarr` exports the shared implementation for
 existing callers; its identity subclass keeps the OMERO reader adapter in the
 importer. Registration planning and managed-source resolution retain their
@@ -10,9 +10,9 @@ established semantics.
 `biomero` acquires a versioned SIF through its image runner and starts a CPU job.
 `biomero-scripts` selects the stage only when shallow storage and compatible
 importer capabilities are enabled. Within that enabled feature, remote
-normalization is preferred unless the administrator selects the local path
+shallowing is preferred unless the administrator selects the local path
 with `BIOMERO_REMOTE_SHALLOW_ZARR=false`. It runs before ZIP creation. The
-import order carries receipts read from completed event-sourced normalizer
+import order carries receipts read from completed event-sourced shallower
 tasks, rather than trusting a batch file found in a workflow archive.
 
 ## Transaction
@@ -42,14 +42,14 @@ copy of a pre-commit array.
 
 ## Slurm events and detached resume
 
-The `_SLURM_Result_Normalizer` task records its configured image/version and
+The `_SLURM_Remote_Shallower` task records its configured image/version and
 input directory. TaskCreated/TaskAdded/TaskStarted precede submission;
 JobIdAdded is saved immediately after the remote submission ledger returns.
 TaskCompleted stores the validated batch report. Workflow progress projections
 ignore this internal task; analytics still retain its provenance.
 
 The remote submission ledger sits outside archived output under
-`.biomero-normalizer/TASK/`. `flock` serializes submission. A saved job ID is
+`.biomero-shallower/TASK/`. `flock` serializes submission. A saved job ID is
 adopted. An intent without an ID is reconciled through the unique task job name
 in `sacct`; an empty or ambiguous accounting result blocks retrieval rather
 than submitting another job. Retry once accounting is available. Operators can
@@ -91,18 +91,16 @@ The report formats and receipt compatibility rules are documented in
 For deployment flags and image initialization, use the
 [NL-BIOMERO administration guide](https://nl-bioimaging.github.io/NL-BIOMERO/master/sysadmin/remote-shallower.html).
 
-The archive extension point is after normalizer completion and before
+The archive extension point is after shallower completion and before
 `zip_data_on_slurm_server`; a later archive adapter can replace ZIP independently.
 
 ## Adding a contract adapter
 
-Add explicit versioned models to `biomero-schema`, then a filesystem adapter
-with independent parity, rollback, and import-validation tests. Dispatch it from
-`operations.ADAPTERS` and expose its accepted version in CLI choices. Shallow
-manifest schema 2 represents scientific image/label relationships separately
-from managed-storage bindings. The current writer still targets NGFF 0.4 / Zarr
-v2 and does not claim RFC-8 compliance; a future adapter can project the graph
-once an accepted collections profile and compatible stores are available.
+Add versioned models to `biomero-schema`, then a filesystem adapter with parity,
+rollback, and import-validation tests. Dispatch it from `operations.ADAPTERS`
+and expose its version in the CLI. The current adapter targets NGFF 0.4 / Zarr
+v2; the [schema contract documentation](https://nl-bioimaging.github.io/biomero-schema/zarr-contracts/#rfc-8-draft-projection-boundary)
+explains why its portable graph is not currently written as RFC-8 metadata.
 
 ## Prerelease schema-1 migration
 

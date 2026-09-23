@@ -1,4 +1,4 @@
-"""BIOMERO filesystem result normalizer."""
+"""BIOMERO filesystem result shallower."""
 
 from importlib.metadata import PackageNotFoundError, version
 
