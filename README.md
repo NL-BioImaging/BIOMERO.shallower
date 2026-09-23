@@ -92,8 +92,10 @@ schema 2 and retains the original files in a sibling
 `.result.ome.zarr.biomero-schema1-backup` directory. Do not run it during an
 active transfer or import: changing the report invalidates an outstanding
 remote receipt checksum. It does not update schema-1 references already stored
-as OMERO MapAnnotations; re-import or migrate those references separately
-before deleting the backup.
+as OMERO MapAnnotations. In a complete BIOMERO deployment, use the
+administrator script **BIOMERO Migrate Shallow Storage** instead: it coordinates
+the filesystem migration with the linked OMERO references and retains recovery
+files for both.
 
 See the [reconstruction guide](https://nl-bioimaging.github.io/NL-BIOMERO/developer/biomero-shallow-zarr.html#reconstruct-shallow-zarr-on-disk)
 for details. A shallow result itself is not a self-contained OME-Zarr for

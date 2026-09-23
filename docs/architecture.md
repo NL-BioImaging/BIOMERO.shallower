@@ -120,10 +120,11 @@ It rejects older manifests that lack the label-component identities required
 by schema 2. Because the report checksum changes, migrate only settled data,
 not an artifact covered by an in-flight remote receipt.
 
-The filesystem-only command cannot update shallow-reference MapAnnotations
-already persisted in OMERO. Those objects must be re-imported or handled by a
-separate OMERO-aware metadata migration before their schema-1 references can be
-removed.
+The filesystem-only command intentionally has no OMERO dependency. Complete
+BIOMERO deployments provide the administrator script **BIOMERO Migrate Shallow
+Storage**, which discovers schema-1 MapAnnotations, validates their storage
+targets, upgrades each store once, and updates all linked OMERO projections.
+It defaults to a dry run and writes recovery snapshots when applied.
 
 ## Python API
 

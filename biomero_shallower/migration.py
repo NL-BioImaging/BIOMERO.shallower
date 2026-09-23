@@ -25,6 +25,8 @@ from biomero_schema.zarr import (
     ShallowLabelBinding,
     ShallowLabelNode,
     ShallowManifest,
+    ShallowPlateReference,
+    ShallowZarrReference,
     ZarrLabelComponent,
 )
 
@@ -150,6 +152,58 @@ def upgrade_manifest_v1(value: dict) -> ShallowManifest:
     )
 
 
+def upgrade_annotation_reference_v1(
+    values: dict[str, str],
+    manifest: ShallowManifest,
+) -> dict[str, str]:
+    """Upgrade one validated schema-1 OMERO shallow-reference projection."""
+    if values.get("schema") != "1" or values.get("model") != "rfc8-shallow-copy":
+        raise ValueError("Expected a schema-1 shallow OMERO reference")
+    expected = {
+        "workflowId": str(manifest.workflow_id),
+        "transferArtifact": manifest.transfer_artifact,
+        "interchangeProfile": manifest.interchange_profile,
+    }
+    for key, value in expected.items():
+        if values.get(key) != value:
+            raise ValueError(f"OMERO reference {key} does not match the store manifest")
+
+    common = {
+        "storage_root": values["storageRoot"],
+        "relative_path": values["relativePath"],
+    }
+    if "imageNodePath" in values:
+        labels = tuple(json.loads(values["labelNodePaths"]))
+        reference = ShallowZarrReference.from_manifest(
+            manifest,
+            image_node_path=values["imageNodePath"],
+            label_node_paths=labels,
+            **common,
+        )
+        old_source = CanonicalZarrSource.from_dict(json.loads(values["source"]))
+        if reference.source != old_source:
+            raise ValueError("OMERO reference source does not match the store manifest")
+    elif "sourceObjectId" in values:
+        reference = ShallowPlateReference.from_manifest(manifest, **common)
+        old_projection = (
+            int(values["sourceObjectId"]),
+            int(values["sourceGeneration"]),
+            int(values["imageNodeCount"]),
+        )
+        new_projection = (
+            reference.source_object_id,
+            reference.source_generation,
+            reference.image_node_count,
+        )
+        if old_projection != new_projection:
+            raise ValueError(
+                "OMERO Plate reference does not match the store manifest"
+            )
+    else:
+        raise ValueError("Unknown schema-1 shallow OMERO reference kind")
+    return reference.to_annotation_values()
+
+
 def _upgrade_report_v1(value: dict, manifest: ShallowManifest):
     if value.get("schema") != 1 or value.get("outputContract") != 1:
         raise ValueError("Expected a schema-1 shallow operation report")
@@ -260,8 +314,52 @@ def migrate_shallow_store_v1(
     )
 
 
+def restore_shallow_store_v1(
+    store_path: str | Path,
+    backup_path: str | Path,
+) -> None:
+    """Restore schema-1 metadata after a coordinated migration failure."""
+    root = Path(store_path).resolve()
+    backup = Path(backup_path).resolve()
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError(f"Shallow store must be a real directory: {root}")
+    if not backup.is_dir() or backup.is_symlink():
+        raise ValueError(f"Migration backup must be a real directory: {backup}")
+    if backup == root or backup.is_relative_to(root):
+        raise ValueError("Migration backup must be outside the shallow store")
+
+    legacy_path = backup / SHALLOW_COLLECTION_MANIFEST
+    legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+    expected_current = upgrade_manifest_v1(legacy)
+    current = ShallowManifest.from_dict(json.loads(
+        (root / SHALLOW_COLLECTION_MANIFEST).read_text(encoding="utf-8")
+    ))
+    if current != expected_current:
+        raise ValueError("Migration backup does not match the current shallow store")
+
+    relative_files = [Path(SHALLOW_COLLECTION_MANIFEST)]
+    if (backup / SHALLOW_OPERATION_REPORT).is_file():
+        relative_files.append(Path(SHALLOW_OPERATION_REPORT))
+    legacy_collection = _LegacyShallowCollection.model_validate(legacy)
+    relative_files.extend(
+        (Path(image.image_node_path) if image.image_node_path != "." else Path())
+        / ".zattrs"
+        for image in legacy_collection.images
+    )
+    for relative in relative_files:
+        source = backup / relative
+        if not source.is_file():
+            raise ValueError(f"Incomplete migration backup: {source}")
+    for relative in relative_files:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(backup / relative, target)
+
+
 __all__ = [
     "ShallowMigrationResult",
     "migrate_shallow_store_v1",
+    "restore_shallow_store_v1",
+    "upgrade_annotation_reference_v1",
     "upgrade_manifest_v1",
 ]

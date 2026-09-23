@@ -9,12 +9,16 @@ from biomero_schema.shallower import SHALLOW_OPERATION_REPORT
 from biomero_schema.zarr import (
     SHALLOW_COLLECTION_MANIFEST,
     ShallowManifest,
+    ShallowPlateReference,
+    ShallowZarrReference,
     ZarrLabelComponent,
 )
 from biomero_shallower.cli import main
 from biomero_shallower import __version__
 from biomero_shallower.migration import (
     migrate_shallow_store_v1,
+    restore_shallow_store_v1,
+    upgrade_annotation_reference_v1,
     upgrade_manifest_v1,
 )
 from biomero_shallower.operations import validate_report
@@ -155,3 +159,92 @@ def test_cli_exposes_explicit_migration(tmp_path, capsys):
     output = json.loads(capsys.readouterr().out)
     assert output["result"] == "migrated"
     assert output["manifestSchema"] == 2
+
+
+def test_upgrades_image_annotation_reference_from_manifest(tmp_path):
+    root, _canonical, legacy = _legacy_store(tmp_path)
+    manifest = upgrade_manifest_v1(legacy)
+    image = legacy["images"][0]
+    values = {
+        "schema": "1",
+        "storageRoot": "group-0-data",
+        "relativePath": "results/result.zarr",
+        "workflowId": legacy["workflowId"],
+        "transferArtifact": legacy["transferArtifact"],
+        "imageNodePath": image["imageNodePath"],
+        "labelNodePaths": json.dumps(image["labelNodePaths"]),
+        "source": json.dumps(image["source"]),
+        "interchangeProfile": legacy["interchangeProfile"],
+        "model": legacy["model"],
+    }
+
+    upgraded = upgrade_annotation_reference_v1(values, manifest)
+
+    reference = ShallowZarrReference.from_annotation_values(upgraded)
+    assert reference.schema == 2
+    assert reference.format == "biomero-shallow-zarr"
+    assert reference.image_node_path == "."
+    assert reference.label_node_paths == ("labels/cells",)
+    assert "model" not in upgraded
+
+
+def test_upgrades_plate_annotation_reference_from_manifest(tmp_path):
+    _root, _canonical, legacy = _legacy_store(tmp_path)
+    legacy["images"][0]["source"]["sourceObjectType"] = "Plate"
+    manifest = upgrade_manifest_v1(legacy)
+    source = manifest.bindings.images[0].source
+    values = {
+        "schema": "1",
+        "storageRoot": "group-0-data",
+        "relativePath": "results/result.zarr",
+        "workflowId": legacy["workflowId"],
+        "transferArtifact": legacy["transferArtifact"],
+        "sourceObjectId": str(source.source_object_id),
+        "sourceGeneration": str(source.source_generation),
+        "imageNodeCount": "1",
+        "interchangeProfile": legacy["interchangeProfile"],
+        "model": legacy["model"],
+    }
+
+    upgraded = upgrade_annotation_reference_v1(values, manifest)
+
+    reference = ShallowPlateReference.from_annotation_values(upgraded)
+    assert reference.schema == 2
+    assert reference.format == "biomero-shallow-zarr"
+    assert reference.source_object_id == source.source_object_id
+
+
+def test_rejects_annotation_for_a_different_store_manifest(tmp_path):
+    _root, _canonical, legacy = _legacy_store(tmp_path)
+    manifest = upgrade_manifest_v1(legacy)
+    image = legacy["images"][0]
+    values = {
+        "schema": "1",
+        "storageRoot": "group-0-data",
+        "relativePath": "results/result.zarr",
+        "workflowId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "transferArtifact": legacy["transferArtifact"],
+        "imageNodePath": image["imageNodePath"],
+        "labelNodePaths": json.dumps(image["labelNodePaths"]),
+        "source": json.dumps(image["source"]),
+        "interchangeProfile": legacy["interchangeProfile"],
+        "model": legacy["model"],
+    }
+
+    with pytest.raises(ValueError, match="workflowId"):
+        upgrade_annotation_reference_v1(values, manifest)
+
+
+def test_restores_schema_1_store_after_successful_migration(tmp_path):
+    root, _canonical, _legacy = _legacy_store(tmp_path)
+    paths = (
+        root / SHALLOW_COLLECTION_MANIFEST,
+        root / SHALLOW_OPERATION_REPORT,
+        root / ".zattrs",
+    )
+    before = {path: path.read_bytes() for path in paths}
+    result = migrate_shallow_store_v1(root)
+
+    restore_shallow_store_v1(root, result.backup_path)
+
+    assert {path: path.read_bytes() for path in paths} == before
