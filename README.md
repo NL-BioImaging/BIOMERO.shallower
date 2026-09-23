@@ -78,6 +78,23 @@ custom deployments must supply their own authoritative mappings, including
 `group_mappings_file` if maintained separately. Outside the container, the same
 Python API works with matching packages and storage mappings.
 
+## Upgrade prerelease schema-1 stores
+
+Schema-1 shallow stores created by prerelease builds are not loaded
+implicitly. Upgrade a settled store explicitly:
+
+```sh
+biomero-shallower migrate-v1 --returned-zarr /results/result.ome.zarr
+```
+
+The command converts the sidecar, operation report, and image-node metadata to
+schema 2 and retains the original files in a sibling
+`.result.ome.zarr.biomero-schema1-backup` directory. Do not run it during an
+active transfer or import: changing the report invalidates an outstanding
+remote receipt checksum. It does not update schema-1 references already stored
+as OMERO MapAnnotations; re-import or migrate those references separately
+before deleting the backup.
+
 See the [reconstruction guide](https://nl-bioimaging.github.io/NL-BIOMERO/developer/biomero-shallow-zarr.html#reconstruct-shallow-zarr-on-disk)
 for details. A shallow result itself is not a self-contained OME-Zarr for
 generic readers; the reconstructed output is.

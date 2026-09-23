@@ -65,6 +65,9 @@ def main(argv=None):
     commands.add_parser("health")
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--returned-zarr", required=True, type=Path)
+    migrate = commands.add_parser("migrate-v1")
+    migrate.add_argument("--returned-zarr", required=True, type=Path)
+    migrate.add_argument("--backup-dir", type=Path)
     for name in ("verify", "normalize", "normalize-tree"):
         command = commands.add_parser(name)
         command.add_argument("--returned-zarr", required=True, type=Path)
@@ -88,6 +91,12 @@ def main(argv=None):
             from dataclasses import asdict
             result = {"schema": 1, "nodes": [asdict(node) for node in
                                              discover_ngff_nodes(args.returned_zarr)]}
+        elif args.command == "migrate-v1":
+            from .migration import migrate_shallow_store_v1
+            result = migrate_shallow_store_v1(
+                args.returned_zarr,
+                backup_path=args.backup_dir,
+            ).to_dict()
         else:
             if args.report.resolve() == args.canonical_inputs.resolve():
                 raise ValueError("Report must not overwrite the canonical input manifest")

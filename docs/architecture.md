@@ -104,6 +104,27 @@ from managed-storage bindings. The current writer still targets NGFF 0.4 / Zarr
 v2 and does not claim RFC-8 compliance; a future adapter can project the graph
 once an accepted collections profile and compatible stores are available.
 
+## Prerelease schema-1 migration
+
+Schema-1 shallow stores are upgraded only through the explicit one-time
+command; normal readers do not silently reinterpret them:
+
+```sh
+biomero-shallower migrate-v1 --returned-zarr /results/result.ome.zarr
+```
+
+The migration validates the complete old manifest, creates deterministic graph
+node IDs, separates graph nodes from storage bindings, rewrites the embedded
+operation report and image-node metadata, and keeps an adjacent rollback copy.
+It rejects older manifests that lack the label-component identities required
+by schema 2. Because the report checksum changes, migrate only settled data,
+not an artifact covered by an in-flight remote receipt.
+
+The filesystem-only command cannot update shallow-reference MapAnnotations
+already persisted in OMERO. Those objects must be re-imported or handled by a
+separate OMERO-aware metadata migration before their schema-1 references can be
+removed.
+
 ## Python API
 
 These filesystem interfaces are shared with BIOMERO.importer. They do not
