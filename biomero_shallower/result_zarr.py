@@ -23,8 +23,13 @@ from biomero_schema.zarr import (
     PixelIdentity,
     SHALLOW_COLLECTION_MANIFEST,
     TRANSFER_INPUT_MARKER,
+    ShallowBindings,
     ShallowCollection,
-    ShallowImageReference,
+    ShallowImageBinding,
+    ShallowImageNode,
+    ShallowLabelBinding,
+    ShallowLabelNode,
+    ShallowManifest,
     ShallowPlateReference,
     ShallowZarrReference,
     ZarrImportOptions,
@@ -75,7 +80,7 @@ class NormalizedShallowResult:
     """Committed shallow collection and optional storage measurements."""
 
     store_path: Path
-    collection: ShallowCollection
+    manifest: ShallowManifest
     bytes_before: int | None
     bytes_after: int | None
 
@@ -97,7 +102,7 @@ class MaterializedShallowResult:
     """A full temporary workflow input reconstructed from managed components."""
 
     destination: Path
-    collection: ShallowCollection
+    manifest: ShallowManifest
     labels: tuple[ZarrLabelComponent, ...]
 
 
@@ -275,7 +280,7 @@ def resolve_shallow_registration(
         return None
 
     try:
-        collection = ShallowCollection.from_dict(json.loads(
+        manifest = ShallowManifest.from_dict(json.loads(
             (collection_root / SHALLOW_COLLECTION_MANIFEST).read_text(
                 encoding="utf-8"
             )
@@ -299,17 +304,18 @@ def resolve_shallow_registration(
     )
     if relative_node == ".":
         source_types = {
-            image.source.source_object_type for image in collection.images
+            binding.source.source_object_type
+            for binding in manifest.bindings.images
         }
         if source_types == {"Plate"}:
-            reference = ShallowPlateReference.from_collection(
-                collection,
+            reference = ShallowPlateReference.from_manifest(
+                manifest,
                 storage_root="import-mount-data",
                 relative_path=collection_root.relative_to(
                     import_root
                 ).as_posix(),
             )
-            first_source = collection.images[0].source
+            first_source = manifest.bindings.images[0].source
             registration_path = resolve_managed_source_path(
                 first_source,
                 roots,
@@ -317,20 +323,22 @@ def resolve_shallow_registration(
             plate_label_paths = []
             if options.plate_pixel_source == "label":
                 label_name = options.plate_label_name
-                for plate_image in collection.images:
+                for plate_image in manifest.collection.images:
                     logical_path = _join_node_path(
-                        plate_image.image_node_path,
+                        plate_image.node_path,
                         "labels",
                         label_name,
                     )
                     components = [
-                        component
-                        for component in plate_image.label_components
-                        if component.logical_node_path == logical_path
+                        binding.component
+                        for binding in manifest.label_bindings_for_image(
+                            plate_image.node_id
+                        )
+                        if binding.component.logical_node_path == logical_path
                     ]
                     if len(components) != 1:
                         raise PixelIdentityError(
-                            f"Plate image {plate_image.image_node_path} does "
+                            f"Plate image {plate_image.node_path} does "
                             f"not declare label {label_name!r} exactly once"
                         )
                     component = components[0]
@@ -353,7 +361,7 @@ def resolve_shallow_registration(
                             f"Plate label is unavailable: {physical_path}"
                         )
                     plate_label_paths.append((
-                        plate_image.image_node_path,
+                        plate_image.node_path,
                         physical_path,
                     ))
             return ShallowRegistration(
@@ -364,16 +372,19 @@ def resolve_shallow_registration(
                 plate_label_paths=tuple(plate_label_paths),
                 plate_label_name=options.plate_label_name,
             )
-        if len(collection.images) != 1 or source_types != {"Image"}:
+        if len(manifest.collection.images) != 1 or source_types != {"Image"}:
             raise PixelIdentityError(
                 "Primary registration requires one Image or one Plate source"
             )
-        image = collection.images[0]
+        image = manifest.collection.images[0]
         kind = "primary"
     else:
         matches = [
-            image for image in collection.images
-            if relative_node in image.label_node_paths
+            image for image in manifest.collection.images
+            if relative_node in {
+                label.node_path for label in manifest.collection.labels
+                if label.source_image_id == image.node_id
+            }
         ]
         if len(matches) != 1:
             raise PixelIdentityError(
@@ -382,20 +393,21 @@ def resolve_shallow_registration(
         image = matches[0]
         kind = "label"
 
-    reference = ShallowZarrReference.from_collection(
-        collection,
+    reference = ShallowZarrReference.from_manifest(
+        manifest,
         storage_root="import-mount-data",
         relative_path=collection_root.relative_to(import_root).as_posix(),
-        image_node_path=image.image_node_path,
+        image_node_path=image.node_path,
     )
     if kind == "label":
         registration_path = path
     else:
-        registration_path = resolve_managed_source_path(image.source, roots)
-        if image.source.node_path != ".":
+        source = manifest.image_binding(image.node_id).source
+        registration_path = resolve_managed_source_path(source, roots)
+        if source.node_path != ".":
             registration_path = _node_directory(
                 registration_path,
-                image.source.node_path,
+                source.node_path,
             )
         if not registration_path.is_dir():
             raise PixelIdentityError(
@@ -414,7 +426,6 @@ def materialize_shallow_zarr(
     destination: str | Path,
     storage_roots: dict[str, Path],
     *,
-    identity_provider: IsccBioIdentityProvider | None = None,
     replace=os.replace,
 ) -> MaterializedShallowResult:
     """Build a conventional image or Plate Zarr from a shallow reference.
@@ -428,7 +439,6 @@ def materialize_shallow_zarr(
             reference,
             destination,
             storage_roots,
-            identity_provider=identity_provider,
             replace=replace,
         )
 
@@ -440,7 +450,7 @@ def materialize_shallow_zarr(
     collection_root = resolve_managed_source_path(reference, storage_roots)
     manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
     try:
-        collection = ShallowCollection.from_dict(json.loads(
+        manifest = ShallowManifest.from_dict(json.loads(
             manifest_path.read_text(encoding="utf-8")
         ))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -448,47 +458,35 @@ def materialize_shallow_zarr(
             f"Invalid shallow collection manifest: {manifest_path}"
         ) from exc
     matches = [
-        image for image in collection.images
-        if image.image_node_path == reference.image_node_path
+        image for image in manifest.collection.images
+        if image.node_path == reference.image_node_path
     ]
     if len(matches) != 1:
         raise PixelIdentityError(
             "Shallow reference must identify exactly one collection image"
         )
     image = matches[0]
-    if (
-        image.source != reference.source
-        or set(image.label_node_paths) != set(reference.label_node_paths)
-    ):
+    image_binding = manifest.image_binding(image.node_id)
+    label_bindings = manifest.label_bindings_for_image(image.node_id)
+    label_paths = tuple(
+        binding.component.logical_node_path for binding in label_bindings
+    )
+    if (image_binding.source != reference.source
+            or set(label_paths) != set(reference.label_node_paths)):
         raise PixelIdentityError(
             "Shallow reference no longer matches its collection manifest"
         )
-    canonical_root = resolve_managed_source_path(image.source, storage_roots)
-    canonical_image = _node_directory(canonical_root, image.source.node_path)
+    canonical_root = resolve_managed_source_path(
+        image_binding.source, storage_roots
+    )
+    canonical_image = _node_directory(
+        canonical_root, image_binding.source.node_path
+    )
     if not canonical_image.is_dir():
         raise PixelIdentityError(
             f"Shallow source image node is unavailable: {canonical_image}"
         )
-    provider = identity_provider or IsccBioIdentityProvider()
-    components = image.label_components
-    if not components:
-        legacy_components = []
-        for logical_path in image.label_node_paths:
-            if not _node_directory(collection_root, logical_path).is_dir():
-                raise PixelIdentityError(
-                    f"Legacy shallow collection lost label {logical_path}"
-                )
-            node = NgffNode(
-                node_path=logical_path,
-                role="label",
-                parent_image_node_path=image.image_node_path,
-            )
-            identity = _identity_for_node(collection_root, node, provider)
-            legacy_components.append(ZarrLabelComponent(
-                logical_node_path=logical_path,
-                pixel_identity=identity,
-            ))
-        components = tuple(legacy_components)
+    components = tuple(binding.component for binding in label_bindings)
 
     token = uuid4().hex
     staging = destination.with_name(
@@ -512,7 +510,7 @@ def materialize_shallow_zarr(
         label_names = []
         for component in components:
             prefix = PurePosixPath(
-                _join_node_path(image.image_node_path, "labels")
+                _join_node_path(image.node_path, "labels")
             )
             logical = PurePosixPath(component.logical_node_path)
             try:
@@ -562,7 +560,7 @@ def materialize_shallow_zarr(
                 "labels",
                 PurePosixPath(path).relative_to(prefix).as_posix(),
             )
-            for path in image.label_node_paths
+            for path in label_paths
         }
         if discovered_paths != expected_paths:
             raise PixelIdentityError(
@@ -575,7 +573,7 @@ def materialize_shallow_zarr(
 
     return MaterializedShallowResult(
         destination=destination,
-        collection=collection,
+        manifest=manifest,
         labels=tuple(managed_labels),
     )
 
@@ -585,7 +583,6 @@ def _materialize_shallow_plate_zarr(
     destination: str | Path,
     storage_roots: dict[str, Path],
     *,
-    identity_provider: IsccBioIdentityProvider | None = None,
     replace=os.replace,
 ) -> MaterializedShallowResult:
     """Reconstruct one conventional Plate from its canonical pixels and labels."""
@@ -597,7 +594,7 @@ def _materialize_shallow_plate_zarr(
     collection_root = resolve_managed_source_path(reference, storage_roots)
     manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
     try:
-        collection = ShallowCollection.from_dict(json.loads(
+        manifest = ShallowManifest.from_dict(json.loads(
             manifest_path.read_text(encoding="utf-8")
         ))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -605,8 +602,8 @@ def _materialize_shallow_plate_zarr(
             f"Invalid shallow collection manifest: {manifest_path}"
         ) from exc
     try:
-        expected_reference = ShallowPlateReference.from_collection(
-            collection,
+        expected_reference = ShallowPlateReference.from_manifest(
+            manifest,
             storage_root=reference.storage_root,
             relative_path=reference.relative_path,
         )
@@ -619,11 +616,13 @@ def _materialize_shallow_plate_zarr(
             "Shallow Plate reference no longer matches its collection manifest"
         )
 
-    first_source = collection.images[0].source
+    first_source = manifest.bindings.images[0].source
     canonical_root = resolve_managed_source_path(first_source, storage_roots)
     canonical_image_directories = {
-        _node_directory(canonical_root, image.source.node_path)
-        for image in collection.images
+        _node_directory(
+            canonical_root, manifest.image_binding(image.node_id).source.node_path
+        )
+        for image in manifest.collection.images
     }
     for directory in canonical_image_directories:
         if not directory.is_dir():
@@ -635,8 +634,6 @@ def _materialize_shallow_plate_zarr(
     staging = destination.with_name(
         f".{destination.name}.biomero-materialize-{token}"
     )
-    provider = identity_provider or IsccBioIdentityProvider()
-
     def ignore(directory, names):
         current = Path(directory)
         ignored = {".biomero-canonical.json"}.intersection(names)
@@ -648,38 +645,21 @@ def _materialize_shallow_plate_zarr(
     expected_label_paths = set()
     try:
         shutil.copytree(canonical_root, staging, symlinks=True, ignore=ignore)
-        for image in collection.images:
-            components = image.label_components
-            if not components:
-                legacy_components = []
-                for logical_path in image.label_node_paths:
-                    physical_path = _node_directory(collection_root, logical_path)
-                    if not physical_path.is_dir():
-                        raise PixelIdentityError(
-                            f"Legacy shallow Plate lost label {logical_path}"
-                        )
-                    node = NgffNode(
-                        node_path=logical_path,
-                        role="label",
-                        parent_image_node_path=image.image_node_path,
-                    )
-                    legacy_components.append(ZarrLabelComponent(
-                        logical_node_path=logical_path,
-                        pixel_identity=_identity_for_node(
-                            collection_root, node, provider
-                        ),
-                    ))
-                components = tuple(legacy_components)
+        for image in manifest.collection.images:
+            components = tuple(
+                binding.component
+                for binding in manifest.label_bindings_for_image(image.node_id)
+            )
 
             labels_root = _node_directory(
                 staging,
-                _join_node_path(image.image_node_path, "labels"),
+                _join_node_path(image.node_path, "labels"),
             )
             labels_root.mkdir()
             _write_json(labels_root / ".zgroup", {"zarr_format": 2})
             label_names = []
             prefix = PurePosixPath(
-                _join_node_path(image.image_node_path, "labels")
+                _join_node_path(image.node_path, "labels")
             )
             for component in sorted(
                 components, key=lambda item: item.logical_node_path
@@ -739,7 +719,7 @@ def _materialize_shallow_plate_zarr(
 
     return MaterializedShallowResult(
         destination=destination,
-        collection=collection,
+        manifest=manifest,
         labels=tuple(managed_labels),
     )
 
@@ -1021,24 +1001,60 @@ def normalize_returned_zarr(
             )
         components_by_image[matches[0]].append(component)
 
-    collection = ShallowCollection(
+    image_graph_nodes = tuple(
+        ShallowImageNode(
+            id=f"image-{index}",
+            name=image_node.node_path,
+            node_path=image_node.node_path,
+        )
+        for index, image_node in enumerate(image_nodes)
+    )
+    image_ids = {
+        image.node_path: image.node_id for image in image_graph_nodes
+    }
+    label_records = tuple(
+        (f"label-{index}", image_path, component)
+        for index, (image_path, component) in enumerate(
+            (image_node.node_path, component)
+            for image_node in image_nodes
+            for component in components_by_image[image_node.node_path]
+        )
+    )
+    manifest = ShallowManifest(
         workflow_id=UUID(str(workflow_id)),
         transfer_artifact=root.name,
         interchange_profile=interchange_profile,
-        images=tuple(
-            ShallowImageReference(
-                image_node_path=image_node.node_path,
-                source=input_sources[image_node.node_path],
-                returned_pixel_identity=returned_by_path[image_node.node_path],
-                label_node_paths=tuple(
-                    component.logical_node_path
-                    for component in components_by_image[image_node.node_path]
-                ),
-                label_components=tuple(
-                    components_by_image[image_node.node_path]
-                ),
-            )
-            for image_node in image_nodes
+        collection=ShallowCollection(
+            name=root.name,
+            images=image_graph_nodes,
+            labels=tuple(
+                ShallowLabelNode(
+                    id=label_id,
+                    name=component.logical_node_path,
+                    node_path=component.logical_node_path,
+                    source_image_id=image_ids[image_path],
+                )
+                for label_id, image_path, component in label_records
+            ),
+        ),
+        bindings=ShallowBindings(
+            images=tuple(
+                ShallowImageBinding(
+                    node_id=image_ids[image_node.node_path],
+                    source=input_sources[image_node.node_path],
+                    returned_pixel_identity=(
+                        returned_by_path[image_node.node_path]
+                    ),
+                )
+                for image_node in image_nodes
+            ),
+            labels=tuple(
+                ShallowLabelBinding(
+                    node_id=label_id,
+                    component=component,
+                )
+                for label_id, _image_path, component in label_records
+            ),
         ),
     )
     omitted = {
@@ -1114,23 +1130,23 @@ def normalize_returned_zarr(
             staging_attrs = _read_attrs(staging_attrs_path.parent)
             staging_attrs.pop("multiscales", None)
             staging_attrs["biomero"] = {
-                "model": collection.model,
+                "format": manifest.format,
                 "manifest": SHALLOW_COLLECTION_MANIFEST,
-                "workflowId": str(collection.workflow_id),
+                "workflowId": str(manifest.workflow_id),
             }
             _write_json(staging_attrs_path, staging_attrs)
         _write_json(
             manifest_path,
-            collection.to_dict(),
+            manifest.to_dict(),
         )
 
-        validated = ShallowCollection.from_dict(json.loads(
+        validated = ShallowManifest.from_dict(json.loads(
             manifest_path.read_text(
                 encoding="utf-8"
             )
         ))
-        if validated != collection:
-            raise PixelIdentityError("Shallow collection manifest changed")
+        if validated != manifest:
+            raise PixelIdentityError("Shallow manifest changed")
         for label in label_nodes:
             label_dir = _node_directory(root, label.node_path)
             if label.node_path in inherited_label_paths:
@@ -1150,7 +1166,7 @@ def normalize_returned_zarr(
                 )
         bytes_after = _tree_size(root) if measure_bytes else None
         if before_commit is not None:
-            before_commit(collection)
+            before_commit(manifest)
         journal["committed"] = True
         write_json(rollback / "journal.json", journal)
     except Exception:
@@ -1165,7 +1181,7 @@ def normalize_returned_zarr(
     shutil.rmtree(rollback)
     return NormalizedShallowResult(
         store_path=root,
-        collection=collection,
+        manifest=manifest,
         bytes_before=bytes_before,
         bytes_after=bytes_after,
     )

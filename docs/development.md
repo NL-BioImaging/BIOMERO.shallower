@@ -20,7 +20,7 @@ identity providers so they do not require the full reader stack.
 The Dockerfile builds from this repository. Runtime dependencies are pinned
 in `requirements.lock`; the build-context allowlist excludes credentials and
 local data. The smoke test checks real ISCC-BIO hashing, label retention,
-canonical immutability, and idempotent normalization without network access.
+canonical immutability, and idempotent shallowing without network access.
 
 From the repository root in a POSIX shell:
 
@@ -52,7 +52,7 @@ updating pins.
 
 ## Performance measurements
 
-Use a disposable returned-result copy; normalization intentionally removes
+Use a disposable returned-result copy; shallowing intentionally removes
 verified duplicate arrays. Never benchmark against canonical storage.
 
 ```sh
@@ -64,7 +64,7 @@ verified duplicate arrays. Never benchmark against canonical storage.
 du -sb /benchmark/result.zarr
 ```
 
-Record identity and normalization timings separately, with input size, worker
+Record identity and shallowing timings separately, with input size, worker
 count, filesystem, and cache state. `--benchmark-bytes` enables expensive
 recursive byte measurements; production runs omit them. The container smoke
 test checks correctness and cannot predict full-screen throughput.

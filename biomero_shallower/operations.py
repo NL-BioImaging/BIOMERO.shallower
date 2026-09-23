@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 from biomero_schema.shallower import SHALLOW_OPERATION_REPORT, ShallowOperationReport
-from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST, ShallowCollection
+from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST, ShallowManifest
 
 from . import __version__
 from .adapters import ADAPTERS
@@ -51,19 +51,22 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
         raise ValueError("Unexpected helper image")
     if tool_version is not None and report.tool_version != tool_version:
         raise ValueError("Unexpected helper version")
-    if report.collection is None:
+    if report.manifest is None:
         return report
-    collection = ShallowCollection.from_dict(json.loads(
+    shallow_manifest = ShallowManifest.from_dict(json.loads(
         (root / SHALLOW_COLLECTION_MANIFEST).read_text(encoding="utf-8")))
-    if collection != report.collection:
+    if shallow_manifest != report.manifest:
         raise ValueError("Manifest does not match verified report")
     matches = []
     for item in manifest.inputs:
         sources = ([image.source for image in item.plate_source.images]
                    if item.plate_source else [item.source])
         if {source.node_path for source in sources} == {
-                image.image_node_path for image in collection.images} and all(
-                image.source in sources for image in collection.images):
+                image.node_path
+                for image in shallow_manifest.collection.images
+        } and all(
+                binding.source in sources
+                for binding in shallow_manifest.bindings.images):
             matches.append(item)
     if len(matches) != 1:
         raise ValueError("No unique authoritative canonical source")
@@ -71,18 +74,34 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
     labels = (tuple(label for image in canonical.plate_source.images
                     for label in image.labels) if canonical.plate_source
               else canonical.labels)
-    for image_ref in collection.images:
-        if not image_ref.source.canonical_pixel_verified:
+    for image_node in shallow_manifest.collection.images:
+        image_binding = shallow_manifest.image_binding(image_node.node_id)
+        if not image_binding.source.canonical_pixel_verified:
             raise ValueError("Canonical image has not been verified")
-        if not pixel_identities_match(image_ref.returned_pixel_identity,
-                                      image_ref.source.pixel_identity):
+        if not pixel_identities_match(
+                image_binding.returned_pixel_identity,
+                image_binding.source.pixel_identity):
             raise ValueError("Returned and canonical image identities differ")
-        attrs = json.loads((root / image_ref.image_node_path / ".zattrs").read_text())
-        if "multiscales" in attrs or attrs.get("biomero", {}).get("manifest") != SHALLOW_COLLECTION_MANIFEST:
+        attrs = json.loads(
+            (root / image_node.node_path / ".zattrs").read_text()
+        )
+        if ("multiscales" in attrs
+                or attrs.get("biomero", {}).get("manifest")
+                != SHALLOW_COLLECTION_MANIFEST):
             raise ValueError("Invalid shallow image structure")
-        if set(image_ref.label_node_paths) != {c.logical_node_path for c in image_ref.label_components}:
+        label_nodes = tuple(
+            label for label in shallow_manifest.collection.labels
+            if label.source_image_id == image_node.node_id
+        )
+        label_bindings = shallow_manifest.label_bindings_for_image(
+            image_node.node_id
+        )
+        if {label.node_path for label in label_nodes} != {
+                binding.component.logical_node_path
+                for binding in label_bindings}:
             raise ValueError("Incomplete label inventory")
-        for component in image_ref.label_components:
+        for binding in label_bindings:
+            component = binding.component
             path = root / component.logical_node_path
             if component.source is not None:
                 if not any(label.source == component.source
@@ -132,14 +151,14 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
                                    reason="unsupported-canonical-profile")
         evaluated = time.monotonic()
 
-        def report_for(collection=None, reason=None):
+        def report_for(shallow_manifest=None, reason=None):
             return ShallowOperationReport(
-                schema=1, toolVersion=__version__, image=image,
-                inputContract=1, outputContract=contract, adapter=adapter.profile,
+                schema=2, toolVersion=__version__, image=image,
+                inputContract=1, outputContract=2, adapter=adapter.profile,
                 canonicalInputs=manifest, artifact=root.name,
                 decision=decision.outcome, reason=reason or decision.reason,
-                result="normalized" if collection else "kept-full",
-                collection=collection,
+                result="normalized" if shallow_manifest else "kept-full",
+                manifest=shallow_manifest,
                 timings={"identity": evaluated - started,
                          "normalization": time.monotonic() - evaluated},
                 slurmJobId=os.getenv("SLURM_JOB_ID"), taskId=task_id,
@@ -147,9 +166,9 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
 
         report = report_for()
         if decision.eligible:
-            def commit(collection):
+            def commit(shallow_manifest):
                 nonlocal report
-                report = report_for(collection)
+                report = report_for(shallow_manifest)
                 write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
                 validate_report(root, manifest, image=image, tool_version=__version__)
             try:
@@ -168,6 +187,6 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
                 if (root / SHALLOW_OPERATION_REPORT).exists():
                     return validate_report(root, manifest, image=image, tool_version=__version__)
                 report = report_for(reason=f"normalization-failed: {exc}")
-        if root.is_dir() and report.collection is None:
+        if root.is_dir() and report.manifest is None:
             write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
         return report

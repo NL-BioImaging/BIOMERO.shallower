@@ -60,7 +60,10 @@ def test_remote_plate_report_retains_labels_and_is_restart_safe(tmp_path):
     })
     report = normalize(root, manifest, identity_provider=provider)
     assert report.result == 'normalized'
-    assert len(report.collection.images) == 2
+    assert report.schema_version == 2
+    assert report.output_contract == 2
+    assert report.manifest.format == "biomero-shallow-zarr"
+    assert len(report.manifest.collection.images) == 2
     assert normalize(root, manifest, identity_provider=object()) == report
     assert not (root / 'A/1/0/0').exists()
     assert (root / 'A/1/0/labels/cells/0').is_dir()

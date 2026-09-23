@@ -1,7 +1,7 @@
 # Architecture, transactions, and recovery
 
 `biomero-schema` owns only portable contracts. `biomero-shallower` owns NGFF
-discovery, ISCC-BIO filesystem identity and move-journal normalization.
+discovery, ISCC-BIO filesystem identity and transactional shallowing.
 `biomero-importer.utils.result_zarr` exports the shared implementation for
 existing callers; its identity subclass keeps the OMERO reader adapter in the
 importer. Registration planning and managed-source resolution retain their
@@ -10,9 +10,9 @@ established semantics.
 `biomero` acquires a versioned SIF through its image runner and starts a CPU job.
 `biomero-scripts` selects the stage only when shallow storage and compatible
 importer capabilities are enabled. Within that enabled feature, remote
-normalization is preferred unless the administrator selects the local path
+shallowing is preferred unless the administrator selects the local path
 with `BIOMERO_REMOTE_SHALLOW_ZARR=false`. It runs before ZIP creation. The
-import order carries receipts read from completed event-sourced normalizer
+import order carries receipts read from completed event-sourced shallower
 tasks, rather than trusting a batch file found in a workflow archive.
 
 ## Transaction
@@ -42,14 +42,14 @@ copy of a pre-commit array.
 
 ## Slurm events and detached resume
 
-The `_SLURM_Result_Normalizer` task records its configured image/version and
+The `_SLURM_Remote_Shallower` task records its configured image/version and
 input directory. TaskCreated/TaskAdded/TaskStarted precede submission;
 JobIdAdded is saved immediately after the remote submission ledger returns.
 TaskCompleted stores the validated batch report. Workflow progress projections
 ignore this internal task; analytics still retain its provenance.
 
 The remote submission ledger sits outside archived output under
-`.biomero-normalizer/TASK/`. `flock` serializes submission. A saved job ID is
+`.biomero-shallower/TASK/`. `flock` serializes submission. A saved job ID is
 adopted. An intent without an ID is reconciled through the unique task job name
 in `sacct`; an empty or ambiguous accounting result blocks retrieval rather
 than submitting another job. Retry once accounting is available. Operators can
@@ -91,17 +91,38 @@ The report formats and receipt compatibility rules are documented in
 For deployment flags and image initialization, use the
 [NL-BIOMERO administration guide](https://nl-bioimaging.github.io/NL-BIOMERO/master/sysadmin/remote-shallower.html).
 
-The archive extension point is after normalizer completion and before
+The archive extension point is after shallower completion and before
 `zip_data_on_slurm_server`; a later archive adapter can replace ZIP independently.
 
 ## Adding a contract adapter
 
-Add explicit versioned models to `biomero-schema`, then a filesystem adapter
-with independent parity, rollback, and import-validation tests. Dispatch it from
-`operations.ADAPTERS` and expose its accepted version in CLI choices. Keep version
-1 behavior stable. The historical manifest model string `rfc8-shallow-copy` is
-preserved for compatibility; this release implements no speculative RFC8/NGFF
-migrations.
+Add versioned models to `biomero-schema`, then a filesystem adapter with parity,
+rollback, and import-validation tests. Dispatch it from `operations.ADAPTERS`
+and expose its version in the CLI. The current adapter targets NGFF 0.4 / Zarr
+v2; the [schema contract documentation](https://nl-bioimaging.github.io/biomero-schema/zarr-contracts/#rfc-8-draft-projection-boundary)
+explains why its portable graph is not currently written as RFC-8 metadata.
+
+## Prerelease schema-1 migration
+
+Schema-1 shallow stores are upgraded only through the explicit one-time
+command; normal readers do not silently reinterpret them:
+
+```sh
+biomero-shallower migrate-v1 --returned-zarr /results/result.ome.zarr
+```
+
+The migration validates the complete old manifest, creates deterministic graph
+node IDs, separates graph nodes from storage bindings, rewrites the embedded
+operation report and image-node metadata, and keeps an adjacent rollback copy.
+It rejects older manifests that lack the label-component identities required
+by schema 2. Because the report checksum changes, migrate only settled data,
+not an artifact covered by an in-flight remote receipt.
+
+The filesystem-only command intentionally has no OMERO dependency. Complete
+BIOMERO deployments provide the administrator script **BIOMERO Migrate Shallow
+Storage**, which discovers schema-1 MapAnnotations, validates their storage
+targets, upgrades each store once, and updates all linked OMERO projections.
+It defaults to a dry run and writes recovery snapshots when applied.
 
 ## Python API
 
