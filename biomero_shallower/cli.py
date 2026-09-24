@@ -84,9 +84,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "health":
+            from .capabilities import capabilities
             from .pixel_identity import IsccBioIdentityProvider
             IsccBioIdentityProvider()._load_upstream()
-            result = {"version": __version__, "contracts": list(ADAPTERS), "result": "healthy"}
+            result = {**capabilities(), "result": "healthy"}
         elif args.command == "inspect":
             from dataclasses import asdict
             result = {"schema": 1, "nodes": [asdict(node) for node in
