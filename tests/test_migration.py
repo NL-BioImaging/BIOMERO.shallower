@@ -17,6 +17,7 @@ from biomero_shallower.cli import main
 from biomero_shallower import __version__
 from biomero_shallower.migration import (
     migrate_shallow_store_v1,
+    rebind_shallow_store_sources,
     restore_shallow_store_v1,
     upgrade_annotation_reference_v1,
     upgrade_manifest_v1,
@@ -121,6 +122,41 @@ def test_migrates_schema_1_store_and_keeps_rollback_copy(tmp_path):
     assert (
         result.backup_path / SHALLOW_OPERATION_REPORT
     ).read_bytes() == old_report
+
+
+def test_rebinds_manifest_and_report_to_one_stable_canonical_store(tmp_path):
+    root, _canonical, legacy = _legacy_store(tmp_path)
+    old_path = ".processed/Image-1.g2.ome.zarr"
+    stable_path = ".processed/Image-1.ome.zarr"
+    legacy_source = legacy["images"][0]["source"]
+    legacy_source["relativePath"] = old_path
+    legacy_source["sourceGeneration"] = 2
+    (root / SHALLOW_COLLECTION_MANIFEST).write_text(
+        json.dumps(legacy), encoding="utf-8"
+    )
+    report_path = root / SHALLOW_OPERATION_REPORT
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["collection"] = legacy
+    report["canonicalInputs"]["inputs"][0]["source"]["relativePath"] = old_path
+    report["canonicalInputs"]["inputs"][0]["source"]["sourceGeneration"] = 2
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    migrate_shallow_store_v1(root, backup_path=tmp_path / "schema-backup")
+
+    result = rebind_shallow_store_sources(
+        root,
+        {("group-0-data", old_path): stable_path},
+        backup_path=tmp_path / "rebind-backup",
+    )
+
+    source = result.manifest.bindings.images[0].source
+    assert source.relative_path == stable_path
+    assert source.source_generation == 1
+    persisted_report = json.loads(report_path.read_text(encoding="utf-8"))
+    report_source = persisted_report["canonicalInputs"]["inputs"][0]["source"]
+    assert report_source["relativePath"] == stable_path
+    assert report_source["sourceGeneration"] == 1
+    assert persisted_report["manifest"] == result.manifest.to_dict()
+    assert (tmp_path / "rebind-backup" / SHALLOW_COLLECTION_MANIFEST).is_file()
 
 
 def test_reconstructs_schema_1_labels_without_component_bindings(tmp_path):

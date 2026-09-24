@@ -18,7 +18,7 @@ LABEL org.opencontainers.image.title="BIOMERO.shallower" \
       org.biomeroproject.shallower.capability-schema="1" \
       org.biomeroproject.shallower.runtime-contracts="1" \
       org.biomeroproject.shallower.manifest-schemas="2" \
-      org.biomeroproject.shallower.migrations="schema-1-to-2,schema-1-path-only-labels"
+      org.biomeroproject.shallower.migrations="canonical-single-store,schema-1-to-2,schema-1-path-only-labels"
 COPY requirements.lock /tmp/requirements.lock
 COPY --from=wheels /wheels /wheels
 RUN pip install --no-cache-dir -r /tmp/requirements.lock /wheels/*.whl \

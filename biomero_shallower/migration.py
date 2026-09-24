@@ -105,6 +105,109 @@ class ShallowMigrationResult:
         }
 
 
+def _replace_canonical_locators(value, replacements):
+    """Replace managed canonical paths in a JSON-compatible contract tree."""
+    if isinstance(value, dict):
+        updated = {
+            key: _replace_canonical_locators(item, replacements)
+            for key, item in value.items()
+        }
+        locator = (updated.get("storageRoot"), updated.get("relativePath"))
+        if locator in replacements:
+            updated["relativePath"] = replacements[locator]
+            if "sourceGeneration" in updated:
+                updated["sourceGeneration"] = 1
+        return updated
+    if isinstance(value, list):
+        return [_replace_canonical_locators(item, replacements) for item in value]
+    return value
+
+
+def rebind_shallow_store_sources(
+    store_path: str | Path,
+    replacements: dict[tuple[str, str], str],
+    *,
+    backup_path: str | Path,
+) -> ShallowMigrationResult:
+    """Point one settled shallow store at stable canonical locations.
+
+    Only versioned metadata is rewritten. Pixel chunks in the shallow result
+    are untouched. The manifest and operation report are validated together,
+    and both are restored if either write fails.
+    """
+    root = Path(store_path).resolve()
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError(f"Shallow store must be a real directory: {root}")
+    if not replacements:
+        raise ValueError("At least one canonical locator replacement is required")
+    normalized = {
+        (str(storage_root), str(old_path)): str(new_path)
+        for (storage_root, old_path), new_path in replacements.items()
+    }
+    if any(not root_name or not old or not new
+           for (root_name, old), new in normalized.items()):
+        raise ValueError("Canonical locator replacements cannot be empty")
+
+    manifest_path = root / SHALLOW_COLLECTION_MANIFEST
+    manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = ShallowManifest.from_dict(
+        _replace_canonical_locators(manifest_raw, normalized)
+    )
+    if manifest.to_dict() == ShallowManifest.from_dict(manifest_raw).to_dict():
+        raise ValueError(f"Shallow store does not reference the canonical paths: {root}")
+
+    report_path = root / SHALLOW_OPERATION_REPORT
+    report = None
+    if report_path.is_file():
+        report_raw = json.loads(report_path.read_text(encoding="utf-8"))
+        report = ShallowOperationReport.from_dict(
+            _replace_canonical_locators(report_raw, normalized)
+        )
+        if report.manifest != manifest:
+            raise ValueError("Shallow operation report and manifest would diverge")
+
+    backup = Path(backup_path).resolve()
+    if backup == root or backup.is_relative_to(root):
+        raise ValueError("Migration backup must be outside the shallow store")
+    if backup.exists():
+        raise ValueError(f"Migration backup already exists: {backup}")
+    files = [manifest_path]
+    if report is not None:
+        files.append(report_path)
+    backup.mkdir(parents=True)
+    for source in files:
+        shutil.copy2(source, backup / source.name)
+
+    try:
+        write_json(manifest_path, manifest.to_dict())
+        if report is not None:
+            write_json(report_path, report.to_dict())
+        ShallowManifest.from_dict(json.loads(
+            manifest_path.read_text(encoding="utf-8")
+        ))
+        if report is not None:
+            persisted_report = ShallowOperationReport.from_dict(json.loads(
+                report_path.read_text(encoding="utf-8")
+            ))
+            if persisted_report.manifest != manifest:
+                raise ValueError("Persisted shallow report and manifest diverge")
+    except BaseException:
+        for source in files:
+            shutil.copy2(backup / source.name, source)
+        raise
+
+    report_sha256 = (
+        hashlib.sha256(report_path.read_bytes()).hexdigest()
+        if report is not None else None
+    )
+    return ShallowMigrationResult(
+        store_path=root,
+        backup_path=backup,
+        manifest=manifest,
+        report_sha256=report_sha256,
+    )
+
+
 def _reconstruct_label_components(root, image, identity_provider):
     components = []
     for node_path in image.label_node_paths:
@@ -426,6 +529,7 @@ def restore_shallow_store_v1(
 __all__ = [
     "ShallowMigrationResult",
     "migrate_shallow_store_v1",
+    "rebind_shallow_store_sources",
     "restore_shallow_store_v1",
     "upgrade_annotation_reference_v1",
     "upgrade_manifest_v1",
