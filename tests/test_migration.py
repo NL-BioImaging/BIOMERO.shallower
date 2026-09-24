@@ -23,7 +23,13 @@ from biomero_shallower.migration import (
 )
 from biomero_shallower.operations import validate_report
 
-from test_result_zarr import _identity, _input, _make_image, _manifest
+from test_result_zarr import (
+    IdentityProvider,
+    _identity,
+    _input,
+    _make_image,
+    _manifest,
+)
 
 
 def _legacy_store(tmp_path):
@@ -117,12 +123,52 @@ def test_migrates_schema_1_store_and_keeps_rollback_copy(tmp_path):
     ).read_bytes() == old_report
 
 
-def test_rejects_schema_1_labels_without_component_bindings(tmp_path):
+def test_reconstructs_schema_1_labels_without_component_bindings(tmp_path):
+    root, _canonical, legacy = _legacy_store(tmp_path)
+    legacy["images"][0].pop("labelComponents")
+    provider = IdentityProvider(_identity("ISCC:ILABEL", role="label"))
+
+    manifest = upgrade_manifest_v1(
+        legacy,
+        store_path=root,
+        identity_provider=provider,
+    )
+
+    component = manifest.bindings.labels[0].component
+    assert component.logical_node_path == "labels/cells"
+    assert component.pixel_identity.node_path == "labels/cells"
+    assert component.source is None
+    assert provider.calls[0][1]["role"] == "label"
+
+
+def test_path_only_schema_1_labels_require_the_physical_store(tmp_path):
     _root, _canonical, legacy = _legacy_store(tmp_path)
     legacy["images"][0].pop("labelComponents")
 
-    with pytest.raises(ValueError, match="labelComponent"):
+    with pytest.raises(ValueError, match="store_path is required"):
         upgrade_manifest_v1(legacy)
+
+
+def test_migrates_path_only_schema_1_labels(tmp_path):
+    root, canonical, legacy = _legacy_store(tmp_path)
+    legacy["images"][0].pop("labelComponents")
+    (root / SHALLOW_COLLECTION_MANIFEST).write_text(
+        json.dumps(legacy), encoding="utf-8"
+    )
+    report_path = root / SHALLOW_OPERATION_REPORT
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["collection"] = legacy
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    provider = IdentityProvider(_identity("ISCC:ILABEL", role="label"))
+
+    result = migrate_shallow_store_v1(
+        root,
+        identity_provider=provider,
+    )
+
+    assert result.manifest.schema == 2
+    assert result.manifest.bindings.labels[0].component.source is None
+    assert validate_report(root, canonical).manifest == result.manifest
 
 
 def test_failed_migration_restores_schema_1_files(tmp_path):

@@ -31,6 +31,10 @@ from biomero_schema.zarr import (
 )
 
 from . import __version__
+from .pixel_identity import (
+    IsccBioIdentityProvider,
+    read_zarr_v2_semantic_guard,
+)
 from .transaction import write_json
 
 
@@ -61,7 +65,9 @@ class _LegacyImageReference(_LegacyModel):
         component_paths = tuple(
             component.logical_node_path for component in self.label_components
         )
-        if set(component_paths) != set(self.label_node_paths):
+        # Schema 1 allowed path-only label inventories. Complete component
+        # bindings were validated only when the optional list was populated.
+        if component_paths and set(component_paths) != set(self.label_node_paths):
             raise ValueError(
                 "schema-1 migration requires one labelComponent for every "
                 "labelNodePath"
@@ -99,9 +105,57 @@ class ShallowMigrationResult:
         }
 
 
-def upgrade_manifest_v1(value: dict) -> ShallowManifest:
-    """Convert a validated prerelease schema-1 manifest in memory."""
+def _reconstruct_label_components(root, image, identity_provider):
+    components = []
+    for node_path in image.label_node_paths:
+        guard = read_zarr_v2_semantic_guard(root, node_path)
+        identity = identity_provider.generate(
+            root,
+            node_path=node_path,
+            role="label",
+            shape=guard.shape,
+            dtype=guard.dtype,
+            axes=guard.axes,
+            coordinate_transformations=guard.coordinate_transformations,
+        )
+        components.append(ZarrLabelComponent(
+            logicalNodePath=node_path,
+            pixelIdentity=identity,
+        ))
+    return tuple(components)
+
+
+def upgrade_manifest_v1(
+    value: dict,
+    *,
+    store_path: str | Path | None = None,
+    identity_provider=None,
+) -> ShallowManifest:
+    """Convert a validated prerelease schema-1 manifest in memory.
+
+    Early schema-1 writers recorded only ``labelNodePaths``. Those labels were
+    retained in the shallow store, so migration reconstructs their missing
+    identity bindings from the physical nodes when ``store_path`` is supplied.
+    """
     legacy = _LegacyShallowCollection.model_validate(value)
+    missing_components = any(
+        image.label_node_paths and not image.label_components
+        for image in legacy.images
+    )
+    root = Path(store_path).resolve() if store_path is not None else None
+    if missing_components and root is None:
+        raise ValueError(
+            "schema-1 manifest has path-only labels; store_path is required "
+            "to reconstruct labelComponents"
+        )
+    provider = identity_provider
+    if missing_components and provider is None:
+        provider = IsccBioIdentityProvider()
+    components_by_image = tuple(
+        image.label_components
+        or _reconstruct_label_components(root, image, provider)
+        for image in legacy.images
+    )
     image_nodes = tuple(
         ShallowImageNode(
             id=f"image-{index}",
@@ -114,8 +168,8 @@ def upgrade_manifest_v1(value: dict) -> ShallowManifest:
         (f"label-{index}", image_node, component)
         for index, (image_node, component) in enumerate(
             (image_node, component)
-            for image_node, image in zip(image_nodes, legacy.images)
-            for component in image.label_components
+            for image_node, components in zip(image_nodes, components_by_image)
+            for component in components
         )
     )
     return ShallowManifest(
@@ -204,13 +258,20 @@ def upgrade_annotation_reference_v1(
     return reference.to_annotation_values()
 
 
-def _upgrade_report_v1(value: dict, manifest: ShallowManifest):
+def _upgrade_report_v1(
+    value: dict,
+    manifest: ShallowManifest,
+    legacy_manifest: dict,
+):
     if value.get("schema") != 1 or value.get("outputContract") != 1:
         raise ValueError("Expected a schema-1 shallow operation report")
     legacy_collection = _LegacyShallowCollection.model_validate(
         value.get("collection")
     )
-    if upgrade_manifest_v1(legacy_collection.to_dict()) != manifest:
+    expected_collection = _LegacyShallowCollection.model_validate(
+        legacy_manifest
+    )
+    if legacy_collection != expected_collection:
         raise ValueError("Schema-1 report and sidecar manifests differ")
     upgraded = dict(value)
     upgraded.pop("collection")
@@ -227,6 +288,7 @@ def migrate_shallow_store_v1(
     store_path: str | Path,
     *,
     backup_path: str | Path | None = None,
+    identity_provider=None,
 ) -> ShallowMigrationResult:
     """Upgrade one settled schema-1 shallow store and retain rollback files.
 
@@ -239,7 +301,11 @@ def migrate_shallow_store_v1(
         raise ValueError(f"Shallow store must be a real directory: {root}")
     manifest_path = root / SHALLOW_COLLECTION_MANIFEST
     raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest = upgrade_manifest_v1(raw_manifest)
+    manifest = upgrade_manifest_v1(
+        raw_manifest,
+        store_path=root,
+        identity_provider=identity_provider,
+    )
 
     report_path = root / SHALLOW_OPERATION_REPORT
     report = None
@@ -247,6 +313,7 @@ def migrate_shallow_store_v1(
         report = _upgrade_report_v1(
             json.loads(report_path.read_text(encoding="utf-8")),
             manifest,
+            raw_manifest,
         )
 
     attrs_updates = {}
@@ -330,7 +397,7 @@ def restore_shallow_store_v1(
 
     legacy_path = backup / SHALLOW_COLLECTION_MANIFEST
     legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
-    expected_current = upgrade_manifest_v1(legacy)
+    expected_current = upgrade_manifest_v1(legacy, store_path=root)
     current = ShallowManifest.from_dict(json.loads(
         (root / SHALLOW_COLLECTION_MANIFEST).read_text(encoding="utf-8")
     ))
