@@ -8,6 +8,7 @@ CAPABILITY_SCHEMA = 1
 RUNTIME_CONTRACTS = tuple(sorted(ADAPTERS))
 SHALLOW_MANIFEST_SCHEMAS = (2,)
 MIGRATIONS = (
+    "canonical-single-store",
     "schema-1-to-2",
     "schema-1-path-only-labels",
 )

@@ -31,6 +31,7 @@ def test_capabilities_describe_runtime_and_migrations():
         "contracts": [1],
         "manifestSchemas": [2],
         "migrations": [
+            "canonical-single-store",
             "schema-1-to-2",
             "schema-1-path-only-labels",
         ],
