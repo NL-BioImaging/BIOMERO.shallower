@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-dependencies = ["biomero-schema>=0.3.0b1,<0.4", "numpy>=1.26.4,<3"]
+# Development only: replace with the published schema lower bound before merge.
+dependencies = ["biomero-schema @ git+https://github.com/NL-BioImaging/biomero-schema.git@0a141a1cddc05d9369a882f73005e1bf5abcdafa", "numpy>=1.26.4,<3"]
 
 [project.urls]
 Repository = "https://github.com/NL-BioImaging/BIOMERO.shallower"

@@ -1,4 +1,5 @@
-# Build from this repository; schema contracts come from the published package.
+# Development PR: schema is pinned to its reviewed v3-contract commit.
+# Restore a published schema dependency and remove git below before release.
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=0.0.dev0
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c AS wheels
 ARG SETUPTOOLS_SCM_PRETEND_VERSION
@@ -21,6 +22,8 @@ LABEL org.opencontainers.image.title="BIOMERO.shallower" \
       org.biomeroproject.shallower.migrations="canonical-single-store,schema-1-to-2,schema-1-path-only-labels"
 COPY requirements.lock /tmp/requirements.lock
 COPY --from=wheels /wheels /wheels
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r /tmp/requirements.lock /wheels/*.whl \
     && pip check \
     && rm -rf /wheels /tmp/requirements.lock \

@@ -11,7 +11,8 @@ from biomero_schema.shallower import SHALLOW_OPERATION_REPORT, ShallowOperationR
 from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST, ShallowManifest
 
 from . import __version__
-from .adapters import ADAPTERS
+from .adapters import ADAPTERS, FORMAT_ADAPTERS
+from .ngff import PixelIdentityError, group_metadata, read_attrs
 from .pixel_identity import pixel_identities_match
 from .transaction import recover, write_json
 
@@ -57,6 +58,8 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
         (root / SHALLOW_COLLECTION_MANIFEST).read_text(encoding="utf-8")))
     if shallow_manifest != report.manifest:
         raise ValueError("Manifest does not match verified report")
+    if report.adapter != shallow_manifest.interchange_profile:
+        raise ValueError("Report adapter and manifest profile differ")
     matches = []
     for item in manifest.inputs:
         sources = ([image.source for image in item.plate_source.images]
@@ -82,9 +85,7 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
                 image_binding.returned_pixel_identity,
                 image_binding.source.pixel_identity):
             raise ValueError("Returned and canonical image identities differ")
-        attrs = json.loads(
-            (root / image_node.node_path / ".zattrs").read_text()
-        )
+        attrs = read_attrs(root / image_node.node_path)
         if ("multiscales" in attrs
                 or attrs.get("biomero", {}).get("manifest")
                 != SHALLOW_COLLECTION_MANIFEST):
@@ -138,6 +139,11 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
             for directory, dirs, names in os.walk(root):
                 if any((Path(directory) / name).is_symlink() for name in dirs + names):
                     raise ValueError("Returned Zarr contains a symlink")
+        try:
+            adapter = FORMAT_ADAPTERS[group_metadata(root)[3]]
+        except PixelIdentityError:
+            # Discovery records the unsupported metadata as a keep-full result.
+            pass
         started = time.monotonic()
         decision = adapter.evaluate(root, manifest,
                                     identity_workers=identity_workers,

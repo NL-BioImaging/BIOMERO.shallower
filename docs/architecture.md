@@ -98,9 +98,23 @@ The archive extension point is after shallower completion and before
 
 Add versioned models to `biomero-schema`, then a filesystem adapter with parity,
 rollback, and import-validation tests. Dispatch it from `operations.ADAPTERS`
-and expose its version in the CLI. The current adapter targets NGFF 0.4 / Zarr
-v2; the [schema contract documentation](https://nl-bioimaging.github.io/biomero-schema/zarr-contracts/#rfc-8-draft-projection-boundary)
+and expose its version in the CLI. Contract 1 selects the NGFF 0.4 / Zarr v2 or
+NGFF 0.5 / Zarr v3 adapter from the returned store's metadata. The
+[schema contract documentation](https://nl-bioimaging.github.io/biomero-schema/zarr-contracts/#rfc-8-draft-projection-boundary)
 explains why its portable graph is not currently written as RFC-8 metadata.
+
+The v3 adapter updates `zarr.json` while preserving its envelope and unrelated
+attributes. Array directories, including encoded shards, use the same move,
+journal, rollback and commit mechanism as v2. Reconstruction keeps the
+canonical format and creates the matching labels-group metadata. It does not
+convert existing v2 stores. V2-only callers can retain the
+`read_zarr_v2_semantic_guard` API; v3-capable callers use
+`read_zarr_semantic_guard` and record its actual interchange profile.
+
+Stores with consolidated v3 metadata, unsupported NGFF versions, mixed-format
+image/label trees, or a different canonical format remain full. Rewriting
+consolidated metadata and converting retained components across formats are
+outside this adapter's scope.
 
 ## Prerelease schema-1 migration
 

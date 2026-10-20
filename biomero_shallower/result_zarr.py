@@ -40,7 +40,11 @@ from .pixel_identity import (
     IsccBioIdentityProvider,
     PixelIdentityError,
     pixel_identities_match,
-    read_zarr_v2_semantic_guard,
+    read_zarr_semantic_guard,
+)
+from .ngff import (
+    encoded_attrs, group_metadata, interchange_profile as node_profile,
+    metadata_path, new_group_metadata, read_attrs,
 )
 
 
@@ -127,14 +131,17 @@ def _node_directory(root: Path, node_path: str) -> Path:
 
 
 def _read_attrs(node: Path) -> dict:
-    path = node / ".zattrs"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PixelIdentityError(f"Cannot read NGFF attributes: {path}") from exc
-    if not isinstance(value, dict):
-        raise PixelIdentityError(f"Invalid NGFF attributes: {path}")
-    return value
+    return read_attrs(node)
+
+
+def _write_attrs(node: Path, attrs: dict) -> None:
+    path, value = encoded_attrs(node, attrs)
+    _write_json(path, value)
+
+
+def _write_labels_group(node: Path, names: list[str], version: int) -> None:
+    for path, value in new_group_metadata(node, {"labels": names}, version).items():
+        _write_json(path, value)
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -506,7 +513,6 @@ def materialize_shallow_zarr(
         shutil.copytree(canonical_image, staging, symlinks=True, ignore=ignore)
         labels_root = staging / "labels"
         labels_root.mkdir(parents=True, exist_ok=False)
-        _write_json(labels_root / ".zgroup", {"zarr_format": 2})
         label_names = []
         for component in components:
             prefix = PurePosixPath(
@@ -550,7 +556,7 @@ def materialize_shallow_zarr(
                 }),
                 source=managed_source,
             ))
-        _write_json(labels_root / ".zattrs", {"labels": label_names})
+        _write_labels_group(labels_root, label_names, group_metadata(staging)[3])
         discovered_paths = {
             node.node_path for node in discover_ngff_nodes(staging)
             if node.role == "label"
@@ -656,7 +662,6 @@ def _materialize_shallow_plate_zarr(
                 _join_node_path(image.node_path, "labels"),
             )
             labels_root.mkdir()
-            _write_json(labels_root / ".zgroup", {"zarr_format": 2})
             label_names = []
             prefix = PurePosixPath(
                 _join_node_path(image.node_path, "labels")
@@ -702,7 +707,9 @@ def _materialize_shallow_plate_zarr(
                 managed_labels.append(component.model_copy(update={
                     "source": managed_source,
                 }))
-            _write_json(labels_root / ".zattrs", {"labels": label_names})
+            _write_labels_group(
+                labels_root, label_names, group_metadata(labels_root.parent)[3]
+            )
 
         discovered_label_paths = {
             node.node_path for node in discover_ngff_nodes(staging)
@@ -762,7 +769,7 @@ def _discover_labels(root: Path, image_node_path: str) -> list[NgffNode]:
 
 
 def discover_ngff_nodes(zarr_root: str | Path) -> tuple[NgffNode, ...]:
-    """Discover NGFF 0.4 image-level nodes by declared image/plate metadata."""
+    """Discover NGFF image-level nodes by declared image/plate metadata."""
     root = Path(zarr_root)
     attrs = _read_attrs(root)
     image_paths: list[str] = []
@@ -839,7 +846,7 @@ def _identity_for_node(
     node: NgffNode,
     identity_provider: IsccBioIdentityProvider,
 ) -> PixelIdentity:
-    guard = read_zarr_v2_semantic_guard(root, node.node_path)
+    guard = read_zarr_semantic_guard(root, node.node_path)
     return identity_provider.generate(
         root,
         node_path=node.node_path,
@@ -982,6 +989,8 @@ def normalize_returned_zarr(
         interchange_profile = matched_input.source.interchange_profile
     else:
         raise PixelIdentityError("Matched input has no canonical source")
+    if interchange_profile != node_profile(root):
+        raise PixelIdentityError("Canonical and returned Zarr profiles differ")
     if set(input_sources) != set(returned_by_path):
         raise PixelIdentityError(
             "Matched input no longer describes every returned image node"
@@ -1100,8 +1109,8 @@ def normalize_returned_zarr(
     from .transaction import begin, recover, write_json, sync_directory
     moved_directories = []
     original_attrs = {
-        _node_directory(root, node.node_path) / ".zattrs":
-        (_node_directory(root, node.node_path) / ".zattrs").read_bytes()
+        metadata_path(_node_directory(root, node.node_path)):
+        metadata_path(_node_directory(root, node.node_path)).read_bytes()
         for node in image_nodes
     }
     try:
@@ -1122,10 +1131,11 @@ def normalize_returned_zarr(
             sync_directory(target.parent)
 
         for image_node in image_nodes:
-            staging_attrs_path = _node_directory(
+            staging_node = _node_directory(
                 root,
                 image_node.node_path,
-            ) / ".zattrs"
+            )
+            staging_attrs_path = metadata_path(staging_node)
             original_attrs[staging_attrs_path] = staging_attrs_path.read_bytes()
             staging_attrs = _read_attrs(staging_attrs_path.parent)
             staging_attrs.pop("multiscales", None)
@@ -1134,7 +1144,7 @@ def normalize_returned_zarr(
                 "manifest": SHALLOW_COLLECTION_MANIFEST,
                 "workflowId": str(manifest.workflow_id),
             }
-            _write_json(staging_attrs_path, staging_attrs)
+            _write_attrs(staging_node, staging_attrs)
         _write_json(
             manifest_path,
             manifest.to_dict(),
@@ -1236,6 +1246,10 @@ def evaluate_returned_zarr(
 
     try:
         nodes = discover_ngff_nodes(root)
+        profile = node_profile(root)
+        if any(node_profile(_node_directory(root, node.node_path)) != profile
+               for node in nodes):
+            raise PixelIdentityError("Mixed Zarr formats in returned image/label nodes")
     except PixelIdentityError as exc:
         return ReturnedZarrDecision(
             store_path=root,
@@ -1342,6 +1356,14 @@ def evaluate_returned_zarr(
             reason=reason,
             image_identities=returned_identities,
             label_node_paths=label_paths,
+        )
+
+    if any(source.interchange_profile != profile
+           for source in sources_for(matches[0]).values()):
+        return ReturnedZarrDecision(
+            store_path=root, outcome="keep-full",
+            reason="unsupported-canonical-profile",
+            image_identities=returned_identities, label_node_paths=label_paths,
         )
 
     try:

@@ -12,10 +12,15 @@ implementation on Slurm before archiving and transferring results.
 Deduplication never suppresses result registration in OMERO.
 
 The package writes the experimental BIOMERO shallow-manifest schema 2 for NGFF
-0.4 / Zarr v2 Images and Plates. This private format is not RFC-8. Its portable
+0.4 / Zarr v2 and 0.5 / Zarr v3 Images and Plates. This private format is not RFC-8. Its portable
 image/label graph is separate from BIOMERO storage bindings so a future
 standards adapter can reuse it. Installing the package does not enable shallow
 storage; deployment configuration chooses local or remote shallowing.
+
+Existing v2 stores remain v2. V3 stores keep their metadata, codecs and shards;
+normalization omits duplicate array directories without re-encoding pixels.
+Canonical and returned stores must use the same profile. Unsupported versions,
+mixed-format image/label trees and consolidated v3 metadata are retained in full.
 
 ## Quick start
 

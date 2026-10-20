@@ -82,6 +82,10 @@ jobs:
             -v "$RUNNER_TEMP/shallower-smoke:/fixture" \
             -v "$PWD/tests:/tests:ro" \
             --entrypoint python biomero-shallower:ci /tests/container_smoke.py
+          docker run --rm --network none \
+            -v "$RUNNER_TEMP/shallower-smoke:/fixture" \
+            -v "$PWD/tests:/tests:ro" \
+            --entrypoint python biomero-shallower:ci /tests/container_smoke.py --zarr-format 3
       - name: Log in to Docker Hub
         if: github.event_name == 'release'
         uses: docker/login-action@v3
