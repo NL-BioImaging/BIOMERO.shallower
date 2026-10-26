@@ -10,8 +10,7 @@ attrs==26.1.0
 bioio==3.5.0
 bioio-base==3.5.0
 bioio-ome-zarr==3.8.1
-# Development only: replace with the released schema version before merge.
-biomero-schema @ git+https://github.com/NL-BioImaging/biomero-schema.git@0a141a1cddc05d9369a882f73005e1bf5abcdafa
+biomero-schema==0.3.0b2
 botocore==1.43.75
 certifi==2026.7.22
 charset-normalizer==3.5.1
