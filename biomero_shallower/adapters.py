@@ -16,3 +16,12 @@ class Ngff04ZarrV2:
 
 
 ADAPTERS = {1: Ngff04ZarrV2()}
+
+
+class Ngff05ZarrV3(Ngff04ZarrV2):
+    """Same workflow contracts, using NGFF 0.5 metadata and v3 arrays."""
+
+    profile = "ngff-0.5-zarr-v3"
+
+
+FORMAT_ADAPTERS = {2: ADAPTERS[1], 3: Ngff05ZarrV3()}

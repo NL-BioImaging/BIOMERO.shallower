@@ -8,7 +8,7 @@ container on Slurm before transferring results. It requires no OMERO connection
 or credentials.
 
 The current adapter writes the experimental BIOMERO shallow-manifest schema 2
-for NGFF 0.4 / Zarr v2 Images and Plates. This private format is not RFC-8.
+for NGFF 0.4 / Zarr v2 and 0.5 / Zarr v3 Images and Plates. This private format is not RFC-8.
 Deduplication never suppresses registration of the result in OMERO, and
 installing this package does not enable the feature.
 
