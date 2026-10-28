@@ -1244,9 +1244,49 @@ def evaluate_returned_zarr(
                 reason="untrusted-transfer-input-marker",
             )
 
+    def sources_for(item: CanonicalInput):
+        if item.plate_source is not None:
+            return {
+                image.image_node_path: image.source
+                for image in item.plate_source.images
+            }
+        if item.source is not None:
+            return {item.source.node_path: item.source}
+        return {}
+
+    # Resolve explicit input bindings before filtering formats: a marker or
+    # artifact name must never silently bind to a different canonical source.
+    artifact_matches = tuple(
+        item for item in canonical_inputs.inputs
+        if item.transfer_artifact == root.name
+    )
+    if marked_input is not None:
+        candidates = (marked_input,)
+    elif len(artifact_matches) > 1:
+        return ReturnedZarrDecision(
+            store_path=root, outcome="keep-full",
+            reason="ambiguous-transfer-artifact",
+        )
+    else:
+        candidates = artifact_matches or canonical_inputs.inputs
+
     try:
-        nodes = discover_ngff_nodes(root)
         profile = node_profile(root)
+        candidates = tuple(
+            item for item in candidates
+            if sources_for(item) and all(
+                source.interchange_profile == profile
+                for source in sources_for(item).values()
+            )
+        )
+        if not candidates:
+            # Root metadata and the canonical snapshot suffice. Avoid opening
+            # every Plate field, initializing readers or hashing any pixels.
+            return ReturnedZarrDecision(
+                store_path=root, outcome="keep-full",
+                reason="unsupported-canonical-profile",
+            )
+        nodes = discover_ngff_nodes(root)
         if any(node_profile(_node_directory(root, node.node_path)) != profile
                for node in nodes):
             raise PixelIdentityError("Mixed Zarr formats in returned image/label nodes")
@@ -1282,16 +1322,6 @@ def evaluate_returned_zarr(
             label_node_paths=label_paths,
         )
 
-    def sources_for(item: CanonicalInput):
-        if item.plate_source is not None:
-            return {
-                image.image_node_path: image.source
-                for image in item.plate_source.images
-            }
-        if item.source is not None:
-            return {item.source.node_path: item.source}
-        return {}
-
     returned_by_path = {
         identity.node_path: identity for identity in returned_identities
     }
@@ -1311,40 +1341,25 @@ def evaluate_returned_zarr(
             for node_path, source in sources.items()
         )
 
-    if marked_input is not None:
-        matches = (marked_input,)
+    if marked_input is not None or artifact_matches:
+        matches = candidates
         reason = (
             unchanged_reason
             if input_matches(matches[0])
             else "pixels-changed"
         )
     else:
-        artifact_matches = tuple(
-            item for item in canonical_inputs.inputs
-            if item.transfer_artifact == root.name
+        matches = tuple(
+            item for item in candidates
+            if input_matches(item)
         )
-        if len(artifact_matches) > 1:
-            reason = "ambiguous-transfer-artifact"
+        if len(matches) == 1:
+            reason = unchanged_reason
+        elif len(matches) > 1:
+            reason = "ambiguous-input-identity"
             matches = ()
-        elif len(artifact_matches) == 1:
-            matches = artifact_matches
-            reason = (
-                unchanged_reason
-                if input_matches(matches[0])
-                else "pixels-changed"
-            )
         else:
-            matches = tuple(
-                item for item in canonical_inputs.inputs
-                if input_matches(item)
-            )
-            if len(matches) == 1:
-                reason = unchanged_reason
-            elif len(matches) > 1:
-                reason = "ambiguous-input-identity"
-                matches = ()
-            else:
-                reason = "no-input-identity-match"
+            reason = "no-input-identity-match"
 
     unchanged = reason == unchanged_reason
     # Identity controls pixel storage, never whether the returned object is

@@ -18,8 +18,11 @@ tasks, rather than trusting a batch file found in a workflow archive.
 ## Transaction
 
 1. Acquire a kernel file lock for the returned store; recover any earlier intent.
-2. Discover nodes and generate exact image and label identities using the
-   existing ISCC-BIO/Imagewalk adapter and semantic guards.
+2. Resolve input markers or artifact names and compare the returned root format
+   with the canonical snapshot. If no compatible source remains, retain the full
+   result without field discovery or pixel hashing. Otherwise discover nodes
+   and generate exact image and label identities using the existing
+   ISCC-BIO/Imagewalk adapter and semantic guards.
 3. Save original image attributes and every planned move in a durable sibling
    `.STORE.biomero-prune-TOKEN/journal.json` before moving arrays.
 4. Move duplicate image arrays and inherited label trees into that sibling
@@ -115,6 +118,13 @@ Stores with consolidated v3 metadata, unsupported NGFF versions, mixed-format
 image/label trees, or a different canonical format remain full. Rewriting
 consolidated metadata and converting retained components across formats are
 outside this adapter's scope.
+
+For renamed results without an input marker or matching artifact name, identity
+matching considers only canonical inputs of the same format. An explicit marker
+or artifact binding to a different format retains the full result, even when
+another compatible input exists. Ambiguous artifact names still retain full
+results. These checks skip equality work; ordinary safety checks, transfer and
+import still run.
 
 ## Prerelease schema-1 migration
 
