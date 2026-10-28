@@ -19,7 +19,10 @@ storage; deployment configuration chooses local or remote shallowing.
 
 Existing v2 stores remain v2. V3 stores keep their metadata, codecs and shards;
 normalization omits duplicate array directories without re-encoding pixels.
-Canonical and returned stores must use the same profile. Unsupported versions,
+Canonical and returned stores must use the same profile. Incompatible formats
+are rejected using root metadata and the canonical input snapshot, before field
+discovery or pixel identity computation. Full results are retained; the canonical
+store is unchanged. Unsupported versions,
 mixed-format image/label trees and consolidated v3 metadata are retained in full.
 
 ## Quick start
