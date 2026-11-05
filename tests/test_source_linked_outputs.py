@@ -22,7 +22,9 @@ def lazy_input(artifact='input.zarr'):
 def crate(root, manifest, *, input_name='input.tif', wrong_run=False, root_result=False):
     output = f'{root.name}/labels/cells/'
     graph = [
-        {'@id': './', '@type': 'Dataset', 'hasPart': [{'@id': output}]},
+        {'@id': 'ro-crate-metadata.json', '@type': 'CreativeWork',
+         'about': {'@id': './'}, 'conformsTo': {'@id': 'https://w3id.org/ro/crate/1.1'}},
+        {'@id': './', '@type': 'Dataset', 'hasPart': [{'@id': output}, {'@id': input_name}]},
         {'@id': '#run', '@type': 'CreateAction',
          'object': [{'@id': input_name}],
          'result': [{'@id': output}] + ([{'@id': root.name}] if root_result else []),
@@ -31,7 +33,7 @@ def crate(root, manifest, *, input_name='input.tif', wrong_run=False, root_resul
         {'@id': '#output', '@type': 'FormalParameter'},
         {'@id': input_name, '@type': 'File'},
     ]
-    (root.parent / 'ro-crate-metadata.json').write_text(json.dumps({'@graph': graph}))
+    (root.parent / 'ro-crate-metadata.json').write_text(json.dumps({'@context': 'https://w3id.org/ro/crate/1.1/context', '@graph': graph}))
 
 
 class LabelsOnly(IdentityProvider):
@@ -166,9 +168,53 @@ def test_crate_file_inventory_never_becomes_dangling_after_pruning(tmp_path):
     path = root.parent / 'ro-crate-metadata.json'
     payload = json.loads(path.read_text())
     payload['@graph'].append({'@id': 'result.zarr/0/0.0.0.0', '@type': 'File'})
+    payload['@graph'][1]['hasPart'].append({'@id': 'result.zarr/0/0.0.0.0'})
     path.write_text(json.dumps(payload))
     original = path.read_bytes()
     report = normalize(root, manifest, identity_provider=LabelsOnly(_identity()))
     assert report.result == 'kept-full'
     assert (root / '0/0.0.0.0').is_file()
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('invalid', ['missing_context', 'duplicate_id', 'unresolved_parameter'])
+def test_invalid_crate_cannot_authorize_shallowing(tmp_path, invalid):
+    root = tmp_path / 'result.zarr'
+    _make_image(root, labels=('cells',))
+    manifest = _manifest(lazy_input())
+    crate(root, manifest)
+    path = root.parent / 'ro-crate-metadata.json'
+    payload = json.loads(path.read_text())
+    if invalid == 'missing_context':
+        del payload['@context']
+    elif invalid == 'duplicate_id':
+        payload['@graph'].append(dict(payload['@graph'][2]))
+    else:
+        payload['@graph'] = [entry for entry in payload['@graph'] if entry['@id'] != '#output']
+    path.write_text(json.dumps(payload))
+    original = path.read_bytes()
+    report = normalize(root, manifest, identity_provider=LabelsOnly(_identity()))
+    assert report.result == 'kept-full'
+    assert (root / '0').is_dir()
+    assert path.read_bytes() == original
+
+
+def test_crate_reader_is_offline_and_does_not_rewrite_metadata(tmp_path, monkeypatch):
+    def no_network(*args, **kwargs):
+        raise AssertionError('Reading local RO-Crate must not fetch remote resources')
+
+    monkeypatch.setattr('requests.sessions.Session.request', no_network)
+    monkeypatch.setattr('urllib.request.urlopen', no_network)
+    root = tmp_path / 'result.zarr'
+    _make_image(root, labels=('cells',))
+    manifest = _manifest(lazy_input())
+    crate(root, manifest)
+    path = root.parent / 'ro-crate-metadata.json'
+    payload = json.loads(path.read_text())
+    payload['@graph'].append({'@id': 'https://example.invalid/provenance', '@type': 'CreativeWork'})
+    path.write_text(json.dumps(payload))
+    original = path.read_bytes()
+    report = normalize(root, manifest, identity_provider=LabelsOnly(_identity()))
+    assert report.result == 'normalized'
+    assert report.manifest.bindings.images[0].decision_basis == 'ro-crate-output'
     assert path.read_bytes() == original

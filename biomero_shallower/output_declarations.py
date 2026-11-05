@@ -3,11 +3,26 @@ import json
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit
 
+from rocrate.model.entity import Entity
+from rocrate.rocrate import ROCrate
+from rocrate.utils import as_list
 
-def _ids(value):
-    values = value if isinstance(value, list) else [value]
-    return [item.get('@id') for item in values if isinstance(item, dict)
-            and isinstance(item.get('@id'), str)]
+
+def _read_crate(path):
+    metadata = json.loads(path.read_text(encoding='utf-8'))
+    graph = metadata['@graph']
+    # The reader resolves duplicate IDs by replacement; ambiguous evidence must
+    # never authorize dropping original pixels.
+    if not isinstance(graph, list) or len({entry['@id'] for entry in graph}) != len(graph):
+        raise ValueError('Ambiguous RO-Crate entity IDs')
+    return ROCrate(metadata)
+
+
+def _references(entity, key):
+    values = as_list(entity.get(key, []))
+    if any(not isinstance(value, Entity) for value in values):
+        raise ValueError(f'Unresolved RO-Crate reference: {key}')
+    return values
 
 
 def _local_path(value):
@@ -45,22 +60,18 @@ def references_omitted_files(root, omitted):
     if path is None:
         return False
     try:
-        graph = json.loads(path.read_text(encoding='utf-8')).get('@graph', [])
-        if not isinstance(graph, list):
-            return False
+        crate = _read_crate(path)
         omitted_paths = [PurePosixPath(item.relative_to(path.parent).as_posix()) for item in omitted]
-        for entry in graph:
-            if not isinstance(entry, dict):
-                continue
-            for key in ('@id', 'contentUrl', 'url'):
-                value = entry.get(key)
+        for entry in crate.get_entities():
+            for value in (entry.id, entry.get('contentUrl'), entry.get('url')):
                 local = _local_path(value) if isinstance(value, str) else None
                 if local is not None and any(PurePosixPath(local).is_relative_to(item)
                                              for item in omitted_paths):
                     return True
         return False
-    except (OSError, ValueError, TypeError):
-        return False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        # An unreadable crate cannot establish that pruning preserves its links.
+        return True
 
 
 def declared_label_input(root, manifest, candidates, label_paths):
@@ -74,18 +85,12 @@ def declared_label_input(root, manifest, candidates, label_paths):
     if path is None:
         return None
     try:
-        graph = json.loads(path.read_text(encoding='utf-8'))['@graph']
-        if not isinstance(graph, list):
-            return None
-        entities = {entry['@id']: entry for entry in graph if isinstance(entry, dict)}
-        if len(entities) != len(graph):
-            return None
-        crate = entities.get('./', entities.get('.', {}))
-        has_parts = set(_ids(crate.get('hasPart')))
+        crate = _read_crate(path)
+        has_parts = {entity.id for entity in _references(crate.root_dataset, 'hasPart')}
         expected = {f'{root.name}/{label}' if path.parent == root.parent else label
                     for label in label_paths}
         matches = []
-        for action in graph:
+        for action in crate.get_entities():
             kinds = action.get('@type', [])
             kinds = [kinds] if isinstance(kinds, str) else kinds
             if 'CreateAction' not in kinds:
@@ -93,25 +98,22 @@ def declared_label_input(root, manifest, candidates, label_paths):
             # A crate that supplies our execution ID must agree with this run.
             if action.get('biomero:workflowId', str(manifest.workflow_id)) != str(manifest.workflow_id):
                 continue
-            outputs = _ids(action.get('result'))
-            labels = [output for output in outputs if _local_path(output) in expected]
+            outputs = _references(action, 'result')
+            labels = [output for output in outputs if _local_path(output.id) in expected]
             if not labels:
                 continue
-            parameters = [parameter for output in labels
-                          for parameter in _ids(entities.get(output, {}).get('exampleOfWork'))]
-            if (any(output not in has_parts or not _ids(entities.get(output, {}).get('exampleOfWork'))
-                    for output in labels)
-                    or any(parameter not in entities for parameter in parameters)):
+            if any(output.id not in has_parts or not _references(output, 'exampleOfWork')
+                   for output in labels):
                 continue
             # A root/image output is derived data, even alongside declared labels.
-            if any(_local_path(output) in {root.name, '.'} for output in outputs):
+            if any(_local_path(output.id) in {root.name, '.'} for output in outputs):
                 continue
-            objects = {_artifact_stem(value) for value in _ids(action.get('object'))
-                       if _local_path(value) is not None}
+            objects = {_artifact_stem(value.id) for value in _references(action, 'object')
+                       if _local_path(value.id) is not None}
             bound = [item for item in candidates if item.transfer_artifact
                      and _artifact_stem(item.transfer_artifact) in objects]
             if len(bound) == 1:
                 matches.append(bound[0])
         return matches[0] if len(matches) == 1 else None
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None

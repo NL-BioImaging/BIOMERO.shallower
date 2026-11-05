@@ -89,8 +89,10 @@ alone is insufficient. Missing or unusable declarations fall through to the
 independent workflow setting; this requires an unambiguous transferred-input
 binding. Neither path calculates otherwise unused original-pixel fingerprints.
 New/changed labels and sidecars remain; other derived stores are retained.
-If a crate explicitly inventories arrays that pruning would remove, the
-artifact stays full so its file references remain valid. The original crate is
+RO-Crate metadata is read locally with `rocrate`, including its standard
+`@context` and metadata descriptor; referenced URLs are not fetched.
+If a crate cannot be read unambiguously or explicitly inventories arrays that
+pruning would remove, the artifact stays full so its file references remain valid. The original crate is
 retained; committed BIOMERO storage manifests record source relationships.
 
 With neither shortcut, the pixels-only ISCC-BIO API fingerprints the coarsest
