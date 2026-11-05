@@ -156,3 +156,19 @@ def test_plate_stops_reading_after_no_input_can_match(tmp_path):
     result = evaluate_returned_zarr(root, _manifest(_plate_input()), identity_provider=provider)
     assert not result.eligible
     assert len(provider.calls) == 1
+
+
+def test_crate_file_inventory_never_becomes_dangling_after_pruning(tmp_path):
+    root = tmp_path / 'result.zarr'
+    _make_image(root, labels=('cells',))
+    manifest = _manifest(lazy_input())
+    crate(root, manifest)
+    path = root.parent / 'ro-crate-metadata.json'
+    payload = json.loads(path.read_text())
+    payload['@graph'].append({'@id': 'result.zarr/0/0.0.0.0', '@type': 'File'})
+    path.write_text(json.dumps(payload))
+    original = path.read_bytes()
+    report = normalize(root, manifest, identity_provider=LabelsOnly(_identity()))
+    assert report.result == 'kept-full'
+    assert (root / '0/0.0.0.0').is_file()
+    assert path.read_bytes() == original

@@ -89,6 +89,9 @@ alone is insufficient. Missing or unusable declarations fall through to the
 independent workflow setting; this requires an unambiguous transferred-input
 binding. Neither path calculates otherwise unused original-pixel fingerprints.
 New/changed labels and sidecars remain; other derived stores are retained.
+If a crate explicitly inventories arrays that pruning would remove, the
+artifact stays full so its file references remain valid. The original crate is
+retained; committed BIOMERO storage manifests record source relationships.
 
 With neither shortcut, the pixels-only ISCC-BIO API fingerprints the coarsest
 compatible stored pyramid level while retaining all channels/Z/timepoints and

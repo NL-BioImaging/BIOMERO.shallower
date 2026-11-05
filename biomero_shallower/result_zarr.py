@@ -44,7 +44,7 @@ from .pixel_identity import (
     read_zarr_comparison_levels,
     comparison_level_matches,
 )
-from .output_declarations import declared_label_input, same_input_artifact
+from .output_declarations import declared_label_input, same_input_artifact, references_omitted_files
 from .ngff import (
     encoded_attrs, group_metadata, interchange_profile as node_profile,
     metadata_path, new_group_metadata, read_attrs,
@@ -1092,6 +1092,8 @@ def normalize_returned_zarr(
         _node_directory(root, label_path)
         for label_path in inherited_label_paths
     )
+    if references_omitted_files(root, omitted):
+        raise PixelIdentityError("RO-Crate inventories omitted arrays; retain full storage")
     # Moving whole Zarr array directories on one filesystem is metadata-only.
     # Keep only top-level omitted directories so a future nested declaration
     # cannot cause the same subtree to be moved twice.

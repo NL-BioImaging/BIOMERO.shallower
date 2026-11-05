@@ -1,14 +1,13 @@
 """ISCC-BIO adapter for BIOMERO pixel identity contracts.
 
-Hashing and IMAGEWALK traversal stay in the upstream ``iscc-bio`` package. This
-module only selects one explicit image node, validates the public API result,
-and combines it with the semantic guard required by BIOMERO's shared contract.
+Canonical pixel encoding and hashing stay in upstream ``iscc-bio``. This
+adapter selects stored array planes in IMAGEWALK order and records their
+resolution alongside the full-image semantic guard.
 """
 
 from dataclasses import dataclass
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
-import os
 from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal, Mapping, Sequence
@@ -229,9 +228,6 @@ class IsccBioIdentityProvider:
                     "Cannot determine the installed iscc-bio version"
                 ) from exc
         return generate, tool_version
-
-    def _import_upstream(self):
-        return import_module("iscc_bio.api")
 
     def generate(
         self,

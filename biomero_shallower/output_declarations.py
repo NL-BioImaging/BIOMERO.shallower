@@ -33,6 +33,36 @@ def same_input_artifact(left, right):
     return bool(left and right and _artifact_stem(left) == _artifact_stem(right))
 
 
+def references_omitted_files(root, omitted):
+    """Keep unsupported crates full instead of leaving dangling file entities.
+
+    Standard label-output declarations reference retained files. A crate that
+    inventories arrays being omitted needs a richer storage transformation;
+    preserving the full artifact is the conservative supported fallback.
+    """
+    path = next((path for path in (root.parent / 'ro-crate-metadata.json',
+                                  root / 'ro-crate-metadata.json') if path.is_file()), None)
+    if path is None:
+        return False
+    try:
+        graph = json.loads(path.read_text(encoding='utf-8')).get('@graph', [])
+        if not isinstance(graph, list):
+            return False
+        omitted_paths = [PurePosixPath(item.relative_to(path.parent).as_posix()) for item in omitted]
+        for entry in graph:
+            if not isinstance(entry, dict):
+                continue
+            for key in ('@id', 'contentUrl', 'url'):
+                value = entry.get(key)
+                local = _local_path(value) if isinstance(value, str) else None
+                if local is not None and any(PurePosixPath(local).is_relative_to(item)
+                                             for item in omitted_paths):
+                    return True
+        return False
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def declared_label_input(root, manifest, candidates, label_paths):
     """Return one bound input only for explicit, consistent label-level outputs.
 
