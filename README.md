@@ -4,7 +4,16 @@
 
 A filesystem-only library and CPU container for shallow Zarr. It compares
 returned images and labels with the workflow's canonical inputs, replaces
-verified duplicate arrays with references, and retains new or changed data.
+reusable original arrays with source references, and retains derived data.
+
+Result handling first uses usable run-bound RO-Crate label outputs, then an
+independent workflow setting, otherwise resolution-specific pixel comparison.
+The comparison uses ISCC-BIO's pixels-only API at a compatible stored pyramid
+level, retaining all channels/Z/timepoints and full-image semantic guards.
+It calculates no raw-store checksum. Matching that level is not a proof of
+full-resolution equality. The calling deployment's shallow-storage off switch
+keeps full results above all shortcuts. See the
+[handling and comparison guide](https://nl-bioimaging.github.io/BIOMERO.shallower/#output-handling-and-comparison).
 No OMERO connection or credentials are required.
 
 BIOMERO.importer uses the Python package locally. BIOMERO core runs the same

@@ -2,7 +2,7 @@
 
 BIOMERO.shallower is the shared filesystem-only implementation of shallow Zarr
 in BIOMERO 2.0. It compares returned OME-Zarr images and labels with canonical
-workflow inputs, references verified duplicate pixels, and retains new or
+workflow inputs, references reusable source pixels, and retains new or
 changed arrays. The importer runs it locally, or BIOMERO runs its CPU-only
 container on Slurm before transferring results. It requires no OMERO connection
 or credentials.
@@ -50,8 +50,8 @@ biomero-shallower verify \
   --image cellularimagingcf/biomero-shallower:0.1.0
 ```
 
-The `normalize` command omits only verified duplicate arrays, never the
-canonical input.
+The `normalize` command omits returned originals according to the recorded
+decision, never the canonical input.
 New or changed labels remain in the store. Unknown contracts are rejected;
 unsupported or ineligible full artifacts are retained. Four identity workers
 are an explicit example, not the default: select parallelism for the allocated
@@ -73,7 +73,39 @@ all artifacts became shallow.
 stores and writes `.biomero-shallow-batch.json` with receipts for shallowed
 artifacts. Ordinary non-Zarr outputs remain in place. Each artifact's durable
 report is `.biomero-shallow-report.json`; `--report` writes an additional copy.
+Receipts also cover kept-full results whose source fingerprint was refreshed.
 See the [report contracts](https://nl-bioimaging.github.io/biomero-schema/remote-shallower-contracts/).
+
+## Output handling and comparison
+
+Shallow storage must be enabled by the calling deployment. The disabled route
+keeps full results and does no deduplication-only hashing or pruning.
+
+For enabled storage, usable RO-Crate label output links automatically select
+the known run input as image background. The supported graph connects a
+`CreateAction.object` input, its label-level `result`, the output's
+`exampleOfWork` parameter and the crate's `hasPart`. A root-level Zarr pointer
+alone is insufficient. Missing or unusable declarations fall through to the
+independent workflow setting; this requires an unambiguous transferred-input
+binding. Neither path calculates otherwise unused original-pixel fingerprints.
+New/changed labels and sidecars remain; other derived stores are retained.
+
+With neither shortcut, the pixels-only ISCC-BIO API fingerprints the coarsest
+compatible stored pyramid level while retaining all channels/Z/timepoints and
+checking full-image semantics. Labels still use their full-resolution pixels.
+Equal selected-level bytes are exact; inferring full-resolution agreement from
+them is BIOMERO policy, not a full-resolution equality proof. No raw-store
+checksum or rendered thumbnail is calculated. See the shared
+[comparison profile](https://nl-bioimaging.github.io/biomero-schema/pixel-identity/).
+
+Old or absent source fingerprints are refreshed lazily from the same backing
+Zarr. Local callers pass managed storage roots. The remote helper uses a current
+cached fingerprint; it does not treat a post-analysis input copy as the
+authoritative source. Missing/stale fingerprints keep that remote result full,
+then the importer compares the actual managed backing store and refreshes its
+cache. A converted TIFF input can still support a declared source-linked output
+through recorded image metadata. Refreshed records are returned to
+the consumer for cache persistence, including failed result matches.
 
 ## Container
 
@@ -82,8 +114,8 @@ docker run --rm --network none cellularimagingcf/biomero-shallower:0.1.0 health
 ```
 
 The image runs as UID/GID `10001:10001`. Bind the returned result directory
-writable and the canonical-input manifest read-only; the remote helper does not
-need a mount of the canonical pixel stores themselves. Writable results require
+writable and the canonical-input manifest read-only. The helper does not need
+access to transferred input copies or original managed canonical stores. Writable results require
 POSIX locks, atomic rename, and fsync. Do not shallow output while a workflow
 is still writing it.
 

@@ -90,6 +90,8 @@ def _identity(
         shape=(1, 1, 8, 8),
         dtype="uint16",
         axes=("t", "c", "y", "x"),
+        comparison_profile="biomero-pixels-v1", dataset_path="0",
+        comparison_shape=(1, 1, 8, 8),
     )
 
 
