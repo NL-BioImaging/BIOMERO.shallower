@@ -10,12 +10,13 @@ from rocrate.utils import as_list
 
 def _read_crate(path):
     metadata = json.loads(path.read_text(encoding='utf-8'))
-    graph = metadata['@graph']
-    # The reader resolves duplicate IDs by replacement; ambiguous evidence must
-    # never authorize dropping original pixels.
-    if not isinstance(graph, list) or len({entry['@id'] for entry in graph}) != len(graph):
+    identifiers = [entry['@id'] for entry in metadata['@graph']]
+    crate = ROCrate(metadata)
+    # Upstream silently replaces duplicate entities, including normalized IDs.
+    # Use its own ID resolution to reject this ambiguous decision evidence.
+    if len({crate.resolve_id(value) for value in identifiers}) != len(identifiers):
         raise ValueError('Ambiguous RO-Crate entity IDs')
-    return ROCrate(metadata)
+    return crate
 
 
 def _references(entity, key):
@@ -63,11 +64,13 @@ def references_omitted_files(root, omitted):
         crate = _read_crate(path)
         omitted_paths = [PurePosixPath(item.relative_to(path.parent).as_posix()) for item in omitted]
         for entry in crate.get_entities():
-            for value in (entry.id, entry.get('contentUrl'), entry.get('url')):
-                local = _local_path(value) if isinstance(value, str) else None
-                if local is not None and any(PurePosixPath(local).is_relative_to(item)
-                                             for item in omitted_paths):
-                    return True
+            for values in (entry.id, entry.get('contentUrl'), entry.get('url')):
+                for value in as_list(values):
+                    value = value.id if isinstance(value, Entity) else value
+                    local = _local_path(value) if isinstance(value, str) else None
+                    if local is not None and any(PurePosixPath(local).is_relative_to(item)
+                                                 for item in omitted_paths):
+                        return True
         return False
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         # An unreadable crate cannot establish that pruning preserves its links.
@@ -90,11 +93,7 @@ def declared_label_input(root, manifest, candidates, label_paths):
         expected = {f'{root.name}/{label}' if path.parent == root.parent else label
                     for label in label_paths}
         matches = []
-        for action in crate.get_entities():
-            kinds = action.get('@type', [])
-            kinds = [kinds] if isinstance(kinds, str) else kinds
-            if 'CreateAction' not in kinds:
-                continue
+        for action in crate.get_by_type('CreateAction'):
             # A crate that supplies our execution ID must agree with this run.
             if action.get('biomero:workflowId', str(manifest.workflow_id)) != str(manifest.workflow_id):
                 continue

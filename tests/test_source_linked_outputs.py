@@ -5,6 +5,7 @@ import pytest
 
 from test_result_zarr import _make_image, _input, _manifest, _identity, IdentityProvider
 from test_pixel_identity import make_image
+from biomero_shallower.output_declarations import references_omitted_files
 from biomero_shallower.operations import normalize, validate_report
 from biomero_shallower.result_zarr import evaluate_returned_zarr
 from biomero_shallower.pixel_identity import IsccBioIdentityProvider, read_zarr_semantic_guard
@@ -177,7 +178,7 @@ def test_crate_file_inventory_never_becomes_dangling_after_pruning(tmp_path):
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize('invalid', ['missing_context', 'duplicate_id', 'unresolved_parameter'])
+@pytest.mark.parametrize('invalid', ['missing_context', 'duplicate_id', 'duplicate_alias', 'unresolved_parameter'])
 def test_invalid_crate_cannot_authorize_shallowing(tmp_path, invalid):
     root = tmp_path / 'result.zarr'
     _make_image(root, labels=('cells',))
@@ -187,8 +188,11 @@ def test_invalid_crate_cannot_authorize_shallowing(tmp_path, invalid):
     payload = json.loads(path.read_text())
     if invalid == 'missing_context':
         del payload['@context']
-    elif invalid == 'duplicate_id':
-        payload['@graph'].append(dict(payload['@graph'][2]))
+    elif invalid in {'duplicate_id', 'duplicate_alias'}:
+        duplicate = dict(payload['@graph'][2])
+        if invalid == 'duplicate_alias':
+            duplicate['@id'] = './#run'
+        payload['@graph'].append(duplicate)
     else:
         payload['@graph'] = [entry for entry in payload['@graph'] if entry['@id'] != '#output']
     path.write_text(json.dumps(payload))
@@ -217,4 +221,59 @@ def test_crate_reader_is_offline_and_does_not_rewrite_metadata(tmp_path, monkeyp
     report = normalize(root, manifest, identity_provider=LabelsOnly(_identity()))
     assert report.result == 'normalized'
     assert report.manifest.bindings.images[0].decision_basis == 'ro-crate-output'
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('property_name', ['contentUrl', 'url'])
+@pytest.mark.parametrize('form', ['string', 'list', 'reference', 'reference_list'])
+def test_crate_inventory_properties_preserve_omitted_pixels(tmp_path, property_name, form):
+    root = tmp_path / 'result.zarr'
+    _make_image(root, labels=('cells',))
+    manifest = _manifest(lazy_input())
+    crate(root, manifest)
+    path = root.parent / 'ro-crate-metadata.json'
+    payload = json.loads(path.read_text())
+    target = 'result.zarr/0/0.0.0.0'
+    value = {'@id': target} if form.startswith('reference') else target
+    if form.endswith('list'):
+        value = [value]
+    if form.startswith('reference'):
+        payload['@graph'].append({'@id': target, '@type': 'File'})
+        payload['@graph'][1]['hasPart'].append({'@id': target})
+    payload['@graph'].append({'@id': '#inventory', '@type': 'CreativeWork', property_name: value})
+    path.write_text(json.dumps(payload))
+    original = path.read_bytes()
+    assert references_omitted_files(root, [root / '0'])
+    report = normalize(root, manifest, identity_provider=LabelsOnly(_identity()))
+    assert report.result == 'kept-full'
+    assert (root / '0/0.0.0.0').is_file()
+    assert path.read_bytes() == original
+
+
+def test_ro_crate_13_retains_reachable_outputs_and_sidecars(tmp_path, monkeypatch):
+    def no_network(*args, **kwargs):
+        raise AssertionError('RO-Crate 1.3 must be read offline')
+
+    monkeypatch.setattr('requests.sessions.Session.request', no_network)
+    monkeypatch.setattr('urllib.request.urlopen', no_network)
+    root = tmp_path / 'result.zarr'
+    _make_image(root, labels=('cells',))
+    manifest = _manifest(lazy_input())
+    crate(root, manifest)
+    path = root.parent / 'ro-crate-metadata.json'
+    payload = json.loads(path.read_text())
+    payload['@context'] = 'https://w3id.org/ro/crate/1.3/context'
+    payload['@graph'][0]['conformsTo']['@id'] = 'https://w3id.org/ro/crate/1.3'
+    payload['@graph'][2]['@type'] = ['CreateAction', 'Action']
+    payload['@graph'].append({'@id': 'measurement.csv', '@type': 'File'})
+    payload['@graph'][1]['hasPart'].append({'@id': 'measurement.csv'})
+    (root.parent / 'measurement.csv').write_text('n,42')
+    path.write_text(json.dumps(payload))
+    original = path.read_bytes()
+    report = normalize(root, manifest, identity_provider=LabelsOnly(_identity()))
+    assert report.result == 'normalized'
+    assert report.manifest.bindings.images[0].decision_basis == 'ro-crate-output'
+    assert not (root / '0').exists()
+    assert (root / 'labels/cells/0').is_dir()
+    assert (root.parent / 'measurement.csv').read_text() == 'n,42'
     assert path.read_bytes() == original
