@@ -68,7 +68,7 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
                 image.node_path
                 for image in shallow_manifest.collection.images
         } and all(
-                binding.source in sources
+                any(_same_source_binding(binding.source, source) for source in sources)
                 for binding in shallow_manifest.bindings.images):
             matches.append(item)
     if len(matches) != 1:
@@ -79,12 +79,12 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
               else canonical.labels)
     for image_node in shallow_manifest.collection.images:
         image_binding = shallow_manifest.image_binding(image_node.node_id)
-        if not image_binding.source.canonical_pixel_verified:
-            raise ValueError("Canonical image has not been verified")
-        if not pixel_identities_match(
+        if (image_binding.decision_basis == "pixel-comparison" and not pixel_identities_match(
                 image_binding.returned_pixel_identity,
-                image_binding.source.pixel_identity):
+                image_binding.source.pixel_identity)):
             raise ValueError("Returned and canonical image identities differ")
+        if image_binding.decision_basis == "workflow-setting" and not manifest.original_pixels_not_required:
+            raise ValueError("Workflow shortcut was not selected for this run")
         attrs = read_attrs(root / image_node.node_path)
         if ("multiscales" in attrs
                 or attrs.get("biomero", {}).get("manifest")
@@ -115,9 +115,16 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
     return report
 
 
+def _same_source_binding(left, right):
+    fields = ("storage_root", "relative_path", "node_path", "source_object_type",
+              "source_object_id", "source_generation", "interchange_profile")
+    return all(getattr(left, field) == getattr(right, field) for field in fields)
+
+
 def normalize(root, manifest, *, contract=1, identity_workers=1,
               failure_policy="keep-full", image=None, task_id=None,
-              identity_provider=None, measure_bytes=False):
+              identity_provider=None, measure_bytes=False,
+              storage_roots=None):
     if contract not in ADAPTERS:
         raise ValueError(f"Unknown contract version: {contract}")
     adapter = ADAPTERS[contract]
@@ -147,7 +154,8 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
         started = time.monotonic()
         decision = adapter.evaluate(root, manifest,
                                     identity_workers=identity_workers,
-                                    identity_provider=identity_provider)
+                                    identity_provider=identity_provider,
+                                    storage_roots=storage_roots)
         if decision.eligible:
             source = decision.matched_inputs[0]
             profile = (source.plate_source.interchange_profile if source.plate_source
@@ -162,6 +170,10 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
                 schema=2, toolVersion=__version__, image=image,
                 inputContract=1, outputContract=2, adapter=adapter.profile,
                 canonicalInputs=manifest, artifact=root.name,
+                refreshedInputs=(manifest.model_copy(update={"inputs": tuple(
+                    next((refreshed for refreshed in decision.refreshed_inputs
+                          if refreshed.ordinal == item.ordinal), item)
+                    for item in manifest.inputs)}) if decision.refreshed_inputs else None),
                 decision=decision.outcome, reason=reason or decision.reason,
                 result="normalized" if shallow_manifest else "kept-full",
                 manifest=shallow_manifest,

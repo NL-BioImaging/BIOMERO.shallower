@@ -43,7 +43,7 @@ def normalize_tree(root, manifest, *, image, task_id, workers=1,
         else:
             report = normalize(store, manifest, image=image, task_id=task_id,
                                identity_workers=workers)
-        if report.result == "normalized":
+        if report.result == "normalized" or report.refreshed_inputs is not None:
             receipts.append(RemoteShallowReceipt(
                 schema=1, image=image, toolVersion=__version__,
                 reportSha256=hashlib.sha256(

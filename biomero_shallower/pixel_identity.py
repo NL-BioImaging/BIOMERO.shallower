@@ -1,19 +1,18 @@
 """ISCC-BIO adapter for BIOMERO pixel identity contracts.
 
-Hashing and IMAGEWALK traversal stay in the upstream ``iscc-bio`` package. This
-module only selects one explicit image node, validates the public API result,
-and combines it with the semantic guard required by BIOMERO's shared contract.
+Canonical pixel encoding and hashing stay in upstream ``iscc-bio``. This
+adapter selects stored array planes in IMAGEWALK order and records their
+resolution alongside the full-image semantic guard.
 """
 
 from dataclasses import dataclass
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
-import os
+from itertools import product
 from pathlib import Path, PurePosixPath
-import tempfile
 from typing import Any, Callable, Literal, Mapping, Sequence
 
-from biomero_schema.zarr import PixelIdentity
+from biomero_schema.zarr import PixelIdentity, PIXEL_COMPARISON_PROFILE
 import numpy as np
 from .ngff import PixelIdentityError, group_metadata, read_json_object
 
@@ -31,6 +30,7 @@ class ZarrNodeSemanticGuard:
     coordinate_transformations: tuple[dict[str, Any], ...]
     ngff_version: str
     zarr_format: int
+    dataset_path: str = "."
 
 
 def _validate_node_path(node_path: str) -> PurePosixPath:
@@ -47,7 +47,7 @@ def _read_json_object(path: Path, description: str) -> dict[str, Any]:
 
 
 def read_zarr_semantic_guard(
-    zarr_root: str | Path, node_path: str
+    zarr_root: str | Path, node_path: str, *, dataset_path: str | None = None
 ) -> ZarrNodeSemanticGuard:
     """Read one explicit NGFF 0.4/v2 or 0.5/v3 image's semantic guard."""
     parsed_node = _validate_node_path(node_path)
@@ -81,7 +81,8 @@ def read_zarr_semantic_guard(
     datasets = multiscale.get("datasets")
     if not isinstance(datasets, list) or not datasets:
         raise PixelIdentityError("NGFF image metadata has no datasets")
-    highest_resolution = datasets[0]
+    highest_resolution = (datasets[0] if dataset_path is None else next(
+        (item for item in datasets if item.get("path") == dataset_path), None))
     if not isinstance(highest_resolution, dict):
         raise PixelIdentityError("NGFF dataset metadata is invalid")
     dataset_path = highest_resolution.get("path")
@@ -110,10 +111,15 @@ def read_zarr_semantic_guard(
         raise PixelIdentityError("Zarr array shape does not match NGFF axes")
     try:
         dtype = np.dtype(array["dtype" if zarr_format == 2 else "data_type"]).name
-    except (KeyError, TypeError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         raise PixelIdentityError("Zarr array dtype is invalid") from exc
 
     transformations = highest_resolution.get("coordinateTransformations", [])
+    group_transformations = multiscale.get("coordinateTransformations", [])
+    if not isinstance(group_transformations, list):
+        raise PixelIdentityError("NGFF group coordinate transformations are invalid")
+    if isinstance(transformations, list):
+        transformations = transformations + group_transformations
     if not isinstance(transformations, list) or any(
         not isinstance(item, dict) for item in transformations
     ):
@@ -126,7 +132,53 @@ def read_zarr_semantic_guard(
         coordinate_transformations=tuple(dict(item) for item in transformations),
         ngff_version=ngff_version,
         zarr_format=zarr_format,
+        dataset_path=dataset_path,
     )
+
+
+def read_zarr_comparison_levels(zarr_root, node_path):
+    """Metadata-only levels preserving dtype and every non-spatial position."""
+    root = Path(zarr_root)
+    node = root if node_path == "." else root / _validate_node_path(node_path)
+    attrs = group_metadata(node)[2]
+    full = read_zarr_semantic_guard(root, node_path)
+    if len(set(full.axes)) != len(full.axes) or not {"x", "y"} <= set(full.axes):
+        raise PixelIdentityError("Image axes must contain unique X/Y axes")
+    if set(full.axes) - {"t", "c", "z", "y", "x"}:
+        raise PixelIdentityError("Unsupported image axes")
+    levels = []
+    for dataset in attrs["multiscales"][0]["datasets"]:
+        if not isinstance(dataset, dict) or not isinstance(dataset.get("path"), str):
+            raise PixelIdentityError("Invalid comparison dataset metadata")
+        level = read_zarr_semantic_guard(root, node_path, dataset_path=dataset["path"])
+        if (level.dtype == full.dtype and all(
+                level.shape[i] == size if axis not in {"x", "y"}
+                else level.shape[i] <= size
+                for i, (axis, size) in enumerate(zip(full.axes, full.shape)))):
+            levels.append(level)
+    return tuple(sorted(levels, key=lambda level: np.prod(level.shape)))
+
+
+def comparison_level_matches(level, identity):
+    """Dataset spelling is provenance, not a compatibility condition."""
+    return (identity is not None and identity.is_current_profile
+            and level.shape == identity.comparison_shape
+            and level.dtype == identity.dtype and level.axes == identity.axes
+            and level.coordinate_transformations == identity.comparison_coordinate_transformations)
+
+
+def _zarr_planes(array, axes):
+    """Decode planes in IMAGEWALK Z/C/T order; upstream owns byte encoding."""
+    Plane = import_module("iscc_bio.imagewalk.common").Plane
+    sizes = dict(zip(axes, array.shape))
+    for z, c, t in product(range(sizes.get("z", 1)), range(sizes.get("c", 1)),
+                           range(sizes.get("t", 1))):
+        position = {"z": z, "c": c, "t": t}
+        pixels = np.asarray(array[tuple(slice(None) if axis in {"x", "y"}
+                                       else position[axis] for axis in axes)])
+        if [axis for axis in axes if axis in {"x", "y"}] == ["x", "y"]:
+            pixels = pixels.T
+        yield Plane(pixels, 0, z, c, t)
 
 
 def read_zarr_v2_semantic_guard(zarr_root, node_path):
@@ -138,7 +190,7 @@ def read_zarr_v2_semantic_guard(zarr_root, node_path):
 
 
 class IsccBioIdentityProvider:
-    """Generate one BIOMERO identity through ``iscc_bio.api.biocode``.
+    """Generate one fingerprint through upstream's pixels-only API.
 
     ``generate_biocode`` and ``tool_version`` are injectable so callers can test
     orchestration without importing the sizeable reader stack. Production use
@@ -160,7 +212,7 @@ class IsccBioIdentityProvider:
         generate = self._generate_biocode
         if generate is None:
             try:
-                generate = self._import_upstream().biocode
+                generate = import_module("iscc_bio.biocode").generate_biocode
             except ImportError as exc:
                 raise PixelIdentityError(
                     "ISCC-BIO is unavailable; install biomero-shallower with "
@@ -177,9 +229,6 @@ class IsccBioIdentityProvider:
                 ) from exc
         return generate, tool_version
 
-    def _import_upstream(self):
-        return import_module("iscc_bio.api")
-
     def generate(
         self,
         zarr_root: str | Path,
@@ -190,6 +239,8 @@ class IsccBioIdentityProvider:
         dtype: str,
         axes: Sequence[str],
         coordinate_transformations: Sequence[Mapping[str, Any]] = (),
+        full_resolution: bool = False,
+        dataset_path: str | None = None,
     ) -> PixelIdentity:
         """Hash exactly one Zarr image node and attach its semantic guard."""
         parsed_node = _validate_node_path(node_path)
@@ -197,31 +248,22 @@ class IsccBioIdentityProvider:
         target = Path(zarr_root).resolve(strict=True)
         if node_path != ".":
             target = target.joinpath(*parsed_node.parts).resolve(strict=True)
-        # Use iscc-bio's BioIO IMAGEWALK implementation for explicit image
-        # nodes. BioIO addresses one image group directly and avoids treating
-        # numeric multiscale arrays as separate bioformats2raw series.
-        if target.name.lower().endswith(".zarr"):
-            result = generate(target, source_type="bioio")
-        else:
-            # BioIO selects its reader from the path suffix. NGFF Plate image
-            # nodes and ordinary label nodes are valid standalone image groups
-            # but normally have names such as A/1/0 or labels/cells. Present a
-            # temporary, zero-copy *.ome.zarr alias so upstream ISCC-BIO can
-            # apply the same BioIO IMAGEWALK implementation used for root
-            # images. The managed store remains read-only.
-            with tempfile.TemporaryDirectory(
-                prefix="biomero-iscc-node-"
-            ) as temporary:
-                alias = Path(temporary) / "image.ome.zarr"
-                try:
-                    os.symlink(target, alias, target_is_directory=True)
-                except OSError as exc:
-                    raise PixelIdentityError(
-                        "Cannot create the temporary NGFF node alias required "
-                        "for ISCC-BIO"
-                    ) from exc
-                result = generate(alias, source_type="bioio")
-        return self._build_identity(
+        full = read_zarr_semantic_guard(zarr_root, node_path)
+        if (tuple(shape), dtype, tuple(axes), tuple(coordinate_transformations)) != (
+                full.shape, full.dtype, full.axes, full.coordinate_transformations):
+            raise PixelIdentityError("Supplied semantics differ from image metadata")
+        levels = read_zarr_comparison_levels(zarr_root, node_path)
+        selected = (full if full_resolution or role == "label" else levels[0])
+        if dataset_path is not None:
+            selected = next((level for level in levels if level.dataset_path == dataset_path), None)
+            if selected is None or (role == "label" and selected != full):
+                raise PixelIdentityError("Requested comparison level is incompatible")
+        try:
+            array = import_module("zarr").open_array(str(target / selected.dataset_path), mode="r")
+            result = {"parts": generate(_zarr_planes(array, full.axes))}
+        except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+            raise PixelIdentityError("Cannot read selected Zarr pixels") from exc
+        identity = self._build_identity(
             result,
             source_description="An explicit Zarr node",
             tool_version=tool_version,
@@ -232,6 +274,11 @@ class IsccBioIdentityProvider:
             axes=axes,
             coordinate_transformations=coordinate_transformations,
         )
+        return identity.model_copy(update={
+            "dataset_path": selected.dataset_path,
+            "comparison_shape": selected.shape,
+            "comparison_coordinate_transformations": selected.coordinate_transformations,
+        })
 
     def _build_identity(
         self,
@@ -288,6 +335,11 @@ class IsccBioIdentityProvider:
                 coordinate_transformations=tuple(
                     dict(item) for item in coordinate_transformations
                 ),
+                comparison_profile=PIXEL_COMPARISON_PROFILE,
+                dataset_path=".",
+                comparison_shape=tuple(shape),
+                comparison_coordinate_transformations=tuple(
+                    dict(item) for item in coordinate_transformations),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise PixelIdentityError(
@@ -303,7 +355,13 @@ def pixel_identities_match(left: PixelIdentity, right: PixelIdentity) -> bool:
     Code is the exact byte identity used for deduplication.
     """
     return (
-        left.instance_code == right.instance_code
+        left is not None and right is not None
+        and left.is_current_profile and right.is_current_profile
+        and left.comparison_profile == right.comparison_profile
+        and left.code_bits == right.code_bits
+        and left.comparison_shape == right.comparison_shape
+        and left.comparison_coordinate_transformations == right.comparison_coordinate_transformations
+        and left.instance_code == right.instance_code
         and left.role == right.role
         and left.shape == right.shape
         and left.dtype == right.dtype

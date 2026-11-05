@@ -21,15 +21,17 @@ tasks, rather than trusting a batch file found in a workflow archive.
 2. Resolve input markers or artifact names and compare the returned root format
    with the canonical snapshot. If no compatible source remains, retain the full
    result without field discovery or pixel hashing. Otherwise discover nodes
-   and generate exact image and label identities using the existing
-   ISCC-BIO/Imagewalk adapter and semantic guards.
+   and choose run-bound output interpretation, the independent workflow policy,
+   or selected-resolution pixel comparison with semantic guards. Only comparison
+   reads original pixels; label handling remains independent.
 3. Save original image attributes and every planned move in a durable sibling
    `.STORE.biomero-prune-TOKEN/journal.json` before moving arrays.
 4. Move duplicate image arrays and inherited label trees into that sibling
    journal on the same filesystem. Retained trees are never copied.
 5. Write shallow metadata and the operation report, and validate the complete
    reference inventory and retained label structure.
-6. Persist the committed journal state, then unlink verified duplicates.
+6. Persist the committed journal state, then unlink the arrays replaced by
+   source references under the recorded decision basis.
 
 An exception before commit restores arrays and original attributes. A killed
 process leaves durable intent: on resume, uncommitted intent is rolled back;

@@ -7,7 +7,7 @@ when discovery or identity matching is incomplete.
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 import json
 import os
@@ -41,7 +41,10 @@ from .pixel_identity import (
     PixelIdentityError,
     pixel_identities_match,
     read_zarr_semantic_guard,
+    read_zarr_comparison_levels,
+    comparison_level_matches,
 )
+from .output_declarations import declared_label_input, same_input_artifact, references_omitted_files
 from .ngff import (
     encoded_attrs, group_metadata, interchange_profile as node_profile,
     metadata_path, new_group_metadata, read_attrs,
@@ -69,6 +72,8 @@ class ReturnedZarrDecision:
     label_components: tuple[ZarrLabelComponent, ...] = ()
     label_node_paths: tuple[str, ...] = ()
     matched_inputs: tuple[CanonicalInput, ...] = ()
+    decision_basis: Literal["pixel-comparison", "ro-crate-output", "workflow-setting"] = "pixel-comparison"
+    refreshed_inputs: tuple[CanonicalInput, ...] = ()
 
     @property
     def eligible(self) -> bool:
@@ -845,6 +850,7 @@ def _identity_for_node(
     root: Path,
     node: NgffNode,
     identity_provider: IsccBioIdentityProvider,
+    *, dataset_path=None,
 ) -> PixelIdentity:
     guard = read_zarr_semantic_guard(root, node.node_path)
     return identity_provider.generate(
@@ -855,6 +861,7 @@ def _identity_for_node(
         dtype=guard.dtype,
         axes=guard.axes,
         coordinate_transformations=guard.coordinate_transformations,
+        **({"dataset_path": dataset_path} if dataset_path is not None else {}),
     )
 
 
@@ -973,7 +980,8 @@ def normalize_returned_zarr(
         identity.node_path: identity
         for identity in decision.image_identities
     }
-    if set(returned_by_path) != {node.node_path for node in image_nodes}:
+    if (decision.decision_basis == "pixel-comparison"
+            and set(returned_by_path) != {node.node_path for node in image_nodes}):
         raise PixelIdentityError(
             "Returned identities no longer describe the discovered image nodes"
         )
@@ -991,7 +999,7 @@ def normalize_returned_zarr(
         raise PixelIdentityError("Matched input has no canonical source")
     if interchange_profile != node_profile(root):
         raise PixelIdentityError("Canonical and returned Zarr profiles differ")
-    if set(input_sources) != set(returned_by_path):
+    if set(input_sources) != {node.node_path for node in image_nodes}:
         raise PixelIdentityError(
             "Matched input no longer describes every returned image node"
         )
@@ -1052,8 +1060,9 @@ def normalize_returned_zarr(
                     node_id=image_ids[image_node.node_path],
                     source=input_sources[image_node.node_path],
                     returned_pixel_identity=(
-                        returned_by_path[image_node.node_path]
+                        returned_by_path.get(image_node.node_path)
                     ),
+                    decision_basis=decision.decision_basis,
                 )
                 for image_node in image_nodes
             ),
@@ -1083,6 +1092,8 @@ def normalize_returned_zarr(
         _node_directory(root, label_path)
         for label_path in inherited_label_paths
     )
+    if references_omitted_files(root, omitted):
+        raise PixelIdentityError("RO-Crate inventories omitted arrays; retain full storage")
     # Moving whole Zarr array directories on one filesystem is metadata-only.
     # Keep only top-level omitted directories so a future nested declaration
     # cannot cause the same subtree to be moved twice.
@@ -1197,12 +1208,48 @@ def normalize_returned_zarr(
     )
 
 
+def _input_sources(item):
+    return ({image.image_node_path: image.source for image in item.plate_source.images}
+            if item.plate_source else {item.source.node_path: item.source})
+
+
+def _with_sources(item, sources):
+    if item.plate_source:
+        plate = item.plate_source.model_copy(update={"images": tuple(
+            image.model_copy(update={"source": sources[image.image_node_path]})
+            for image in item.plate_source.images)})
+        return item.model_copy(update={"plate_source": plate})
+    return item.model_copy(update={"source": sources[item.source.node_path]})
+
+
+def _source_path(source, storage_roots):
+    if storage_roots and source.storage_root in storage_roots:
+        return resolve_managed_source_path(source, storage_roots)
+    return None
+
+
+def _guard_matches_source(guard, source):
+    identity = source.pixel_identity
+    metadata = source.image_metadata
+    if identity is not None:
+        return (guard.shape == identity.shape and guard.dtype == identity.dtype
+                and guard.axes == identity.axes
+                and guard.coordinate_transformations == identity.coordinate_transformations)
+    if metadata is not None:
+        return (guard.shape == tuple(metadata.get("shape", ()))
+                and guard.dtype == metadata.get("dtype")
+                and guard.axes == tuple(metadata.get("axes", ()))
+                and guard.coordinate_transformations == tuple(metadata.get("coordinateTransformations", ())))
+    return False
+
+
 def evaluate_returned_zarr(
     zarr_root: str | Path,
     canonical_inputs: CanonicalInputManifest | None,
     *,
     identity_provider: IsccBioIdentityProvider | None = None,
     identity_workers: int = 1,
+    storage_roots: dict[str, Path] | None = None,
 ) -> ReturnedZarrDecision:
     """Compare one returned image store with its workflow-scoped inputs.
 
@@ -1307,61 +1354,137 @@ def evaluate_returned_zarr(
             label_node_paths=label_paths,
         )
     provider = identity_provider or IsccBioIdentityProvider()
+    image_paths = {node.node_path for node in image_nodes}
+    candidates = tuple(item for item in candidates if set(sources_for(item)) == image_paths)
+    if not candidates:
+        return ReturnedZarrDecision(root, "keep-full", "image-layout-mismatch",
+                                    label_node_paths=label_paths)
     try:
-        returned_identities = _identities_for_nodes(
-            root,
-            image_nodes,
-            provider,
-            max_workers=identity_workers,
-        )
+        guards = {node.node_path: read_zarr_semantic_guard(root, node.node_path)
+                  for node in image_nodes}
     except PixelIdentityError as exc:
-        return ReturnedZarrDecision(
-            store_path=root,
-            outcome="keep-full",
-            reason=f"identity-unavailable: {exc}",
-            label_node_paths=label_paths,
-        )
+        return ReturnedZarrDecision(root, "keep-full", f"unsupported-ngff: {exc}",
+                                    label_node_paths=label_paths)
+    prepared = []
+    for item in candidates:
+        sources = dict(sources_for(item))
+        for path, source in sources.items():
+            if source.pixel_identity is None and source.image_metadata is None:
+                try:
+                    source_root = _source_path(source, storage_roots)
+                    if source_root is None:
+                        continue
+                    guard = read_zarr_semantic_guard(source_root, path)
+                    source = source.model_copy(update={"image_metadata": {
+                        "shape": list(guard.shape), "dtype": guard.dtype,
+                        "axes": list(guard.axes),
+                        "coordinateTransformations": list(guard.coordinate_transformations)}})
+                    sources[path] = source
+                except (OSError, ValueError):
+                    continue
+        if all(_guard_matches_source(guards[path], source) for path, source in sources.items()):
+            prepared.append(_with_sources(item, sources))
+    candidates = tuple(prepared)
+    if not candidates:
+        return ReturnedZarrDecision(root, "keep-full", "image-semantics-mismatch",
+                                    label_node_paths=label_paths)
+    declared_input = declared_label_input(root, canonical_inputs, candidates, label_paths)
+    basis = "pixel-comparison"
+    selected = None
+    if declared_input is not None:
+        basis, selected = "ro-crate-output", declared_input
+    elif canonical_inputs.original_pixels_not_required:
+        # An explicit run/input filename binding is necessary for multiple inputs.
+        choices = tuple(item for item in candidates if same_input_artifact(item.transfer_artifact, root.name))
+        if marked_input is not None:
+            choices = candidates
+        if len(choices) == 1:
+            basis, selected = "workflow-setting", choices[0]
+    refreshed = {item.ordinal: item for item in candidates}
+    original_inputs = {item.ordinal: item for item in canonical_inputs.inputs}
 
-    returned_by_path = {
-        identity.node_path: identity for identity in returned_identities
-    }
+    def refreshed_items():
+        return tuple(item for ordinal, item in refreshed.items()
+                     if item != original_inputs[ordinal])
+    returned_by_candidate = {item.ordinal: {} for item in candidates}
+    returned_identities = ()
+
+    def compare_node(node, active):
+        path = node.node_path
+        returned_levels = read_zarr_comparison_levels(root, path)
+        measured = {}
+        results = {}
+        for item in active:
+            source = sources_for(item)[path]
+            identity = source.pixel_identity
+            level = next((level for level in returned_levels
+                          if comparison_level_matches(level, identity)), None)
+            if level is None:
+                source_root = _source_path(source, storage_roots)
+                if source_root is None:
+                    continue
+                source_levels = read_zarr_comparison_levels(source_root, path)
+                common = next(((left, right) for left in returned_levels for right in source_levels
+                               if left.shape == right.shape and left.dtype == right.dtype
+                               and left.axes == right.axes
+                               and left.coordinate_transformations == right.coordinate_transformations), None)
+                if common is None:
+                    continue
+                level, source_level = common
+                identity = _identity_for_node(source_root, node, provider,
+                                              dataset_path=source_level.dataset_path)
+                source = source.model_copy(update={"pixel_identity": identity,
+                                                   "canonical_pixel_verified": True})
+            if level.dataset_path not in measured:
+                measured[level.dataset_path] = _identity_for_node(root, node, provider,
+                                                                  dataset_path=level.dataset_path)
+            returned = measured[level.dataset_path]
+            results[item.ordinal] = (source, returned, pixel_identities_match(returned, identity))
+        return path, results
+
+    if selected is not None:
+        matches = (selected,)
+        reason = basis
+    else:
+        active = candidates
+        try:
+            # Submit one bounded batch at a time; failed candidates cannot cause
+            # the remainder of a large Plate to be queued for needless reads.
+            with ThreadPoolExecutor(max_workers=min(identity_workers, len(image_nodes))) as executor:
+                for offset in range(0, len(image_nodes), identity_workers):
+                    batch = image_nodes[offset:offset + identity_workers]
+                    results = list(executor.map(lambda node: compare_node(node, active), batch))
+                    surviving = {item.ordinal for item in active}
+                    for path, field_results in results:
+                        surviving.intersection_update(ordinal for ordinal, value in field_results.items() if value[2])
+                        for ordinal, (source, returned, _) in field_results.items():
+                            updated = dict(sources_for(refreshed[ordinal]))
+                            updated[path] = source
+                            refreshed[ordinal] = _with_sources(refreshed[ordinal], updated)
+                            returned_by_candidate[ordinal][path] = returned
+                    active = tuple(refreshed[item.ordinal] for item in active if item.ordinal in surviving)
+                    if not active:
+                        break
+            matches = active if len(active) == 1 else ()
+            reason = ("ambiguous-input-identity" if len(active) > 1 else
+                      "pixels-changed" if marked_input is not None or artifact_matches else
+                      "no-input-identity-match")
+            if matches:
+                returned_identities = tuple(returned_by_candidate[matches[0].ordinal][node.node_path]
+                                            for node in image_nodes)
+        except (PixelIdentityError, OSError, ValueError) as exc:
+            return ReturnedZarrDecision(root, "keep-full", f"identity-unavailable: {exc}",
+                                        label_node_paths=label_paths,
+                                        refreshed_inputs=refreshed_items())
     unchanged_reason = (
         "input-image-unchanged"
-        if len(returned_identities) == 1
+        if len(image_nodes) == 1
         else "input-plate-unchanged"
     )
 
-    def input_matches(item: CanonicalInput) -> bool:
-        sources = sources_for(item)
-        return set(sources) == set(returned_by_path) and all(
-            pixel_identities_match(
-                returned_by_path[node_path],
-                source.pixel_identity,
-            )
-            for node_path, source in sources.items()
-        )
-
-    if marked_input is not None or artifact_matches:
-        matches = candidates
-        reason = (
-            unchanged_reason
-            if input_matches(matches[0])
-            else "pixels-changed"
-        )
-    else:
-        matches = tuple(
-            item for item in candidates
-            if input_matches(item)
-        )
-        if len(matches) == 1:
-            reason = unchanged_reason
-        elif len(matches) > 1:
-            reason = "ambiguous-input-identity"
-            matches = ()
-        else:
-            reason = "no-input-identity-match"
-
-    unchanged = reason == unchanged_reason
+    if matches and basis == "pixel-comparison":
+        reason = unchanged_reason
+    unchanged = bool(matches)
     # Identity controls pixel storage, never whether the returned object is
     # a result. Label-free results can reference canonical pixels as well.
     if not unchanged:
@@ -1371,6 +1494,7 @@ def evaluate_returned_zarr(
             reason=reason,
             image_identities=returned_identities,
             label_node_paths=label_paths,
+            refreshed_inputs=refreshed_items(),
         )
 
     if any(source.interchange_profile != profile
@@ -1379,6 +1503,7 @@ def evaluate_returned_zarr(
             store_path=root, outcome="keep-full",
             reason="unsupported-canonical-profile",
             image_identities=returned_identities, label_node_paths=label_paths,
+            refreshed_inputs=refreshed_items(),
         )
 
     try:
@@ -1395,6 +1520,7 @@ def evaluate_returned_zarr(
             reason=f"label-identity-unavailable: {exc}",
             image_identities=returned_identities,
             label_node_paths=label_paths,
+            refreshed_inputs=refreshed_items(),
         )
 
     if matches[0].plate_source is not None:
@@ -1432,6 +1558,8 @@ def evaluate_returned_zarr(
         label_components=tuple(label_components),
         label_node_paths=label_paths,
         matched_inputs=matches,
+        decision_basis=basis,
+        refreshed_inputs=refreshed_items(),
     )
 
 
