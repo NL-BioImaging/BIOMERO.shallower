@@ -10,6 +10,22 @@ Required reading first: the
 They cover principles, logging, branches and pull requests, and agent
 guidance; they are not repeated here.
 
+## Design intent
+
+Before changing what is shallowed or how it is decided, read the section
+"Why BIOMERO shallows results" in NL-BIOMERO
+[`docs/developer/biomero-shallow-zarr.md`](https://github.com/NL-BioImaging/NL-BIOMERO/blob/master/docs/developer/biomero-shallow-zarr.md)
+(published under the NL-BIOMERO documentation, Developer section). Rules for
+agents:
+
+- Shallow only BIOMERO's own copies in managed storage, never original
+  acquisition data.
+- Keep the smallest-compatible-pyramid-level comparison in the result path. Do
+  not replace it with full-resolution comparison there without a maintainer
+  decision; exact checks belong in background work.
+- Keep shallow results viewable and reconstructable; a change that breaks
+  reconstruction or OMERO registration is a regression.
+
 ## Purpose and boundaries
 
 BIOMERO.shallower is a filesystem-only library and CPU container that replaces
