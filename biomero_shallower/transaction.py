@@ -16,6 +16,8 @@ import shutil
 from biomero_schema.shallower import SHALLOW_OPERATION_REPORT
 from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST
 
+# `sync_directory` and `write_json` moved to `filesystem`; they stay importable
+# from here (see `__all__`) because BIOMERO.importer imports them from this module.
 from .filesystem import sync_directory, temporary_path, write_bytes, write_json
 from .ngff import safe_node_path
 
@@ -35,7 +37,6 @@ __all__ = [
     "commit",
     "pending_prune_journals",
     "prune_was_committed",
-    "read_journal",
     "recover",
     "remove_rollback",
     "rollback_folders",
@@ -179,8 +180,8 @@ def remove_rollback(rollback):
     _delete_rollback_folder(rollback)
 
 
-def read_journal(rollback):
-    """Return the journal of a rollback folder, or None for an empty one.
+def _read_journal_discarding_empty_folder(rollback):
+    """Return the journal of a rollback folder; delete the folder and return None if it is empty.
 
     A folder can be empty, or hold only an unfinished journal write, if the
     process was killed before the intent was saved; it is removed. A non-empty
@@ -189,9 +190,10 @@ def read_journal(rollback):
     journal = load_journal(rollback)
     if journal is not None:
         return journal
-    if all(child.name == JOURNAL_TEMPORARY_NAME for child in rollback.iterdir()):
+    children = list(rollback.iterdir())
+    if all(child.name == JOURNAL_TEMPORARY_NAME for child in children):
         logger.info(f"Removing empty rollback folder {rollback}")
-        for child in rollback.iterdir():
+        for child in children:
             child.unlink()
         rollback.rmdir()
         return None
@@ -234,7 +236,7 @@ def recover(root):
     """
     root = Path(root)
     for rollback in rollback_folders(root):
-        journal = read_journal(rollback)
+        journal = _read_journal_discarding_empty_folder(rollback)
         if journal is None:
             continue
         logger.info(f"Recovering {root} from {rollback}: committed={journal.committed}, "

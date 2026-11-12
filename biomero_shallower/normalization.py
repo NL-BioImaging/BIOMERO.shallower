@@ -9,7 +9,6 @@ deletes the rollback folder. A failure before the commit rolls everything back.
 from dataclasses import dataclass
 import json
 import logging
-import os
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
@@ -26,13 +25,13 @@ from biomero_schema.zarr import (
 
 from .discovery import NgffNode, discover_ngff_nodes
 from .evaluation import BASIS_PIXEL_COMPARISON, ReturnedZarrDecision
-from .filesystem import sync_directory, write_json
+from .filesystem import resolve_move, sync_directory, write_json
 from .ngff import (
-    interchange_profile as node_profile, join_node_path, metadata_path,
-    node_directory, read_attrs, safe_node_path, write_attrs,
+    LABELS_GROUP_NAME, PixelIdentityError, interchange_profile as node_profile,
+    join_node_path, metadata_path, node_directory, read_attrs, safe_node_path,
+    write_attrs,
 )
 from .output_declarations import references_omitted_files
-from .pixel_identity import PixelIdentityError
 from .transaction import (
     begin, commit, recover, remove_rollback, rollback_path,
 )
@@ -97,7 +96,7 @@ def normalize_returned_zarr(
     failures). ``replace`` is the deprecated former name of ``move``, still
     accepted for existing callers.
     """
-    move = replace or move or os.replace
+    move = resolve_move(move, replace)
     plan = _plan_prune(decision, workflow_id)
     bytes_before = _tree_size(plan.root) if measure_bytes else None
     logger.info(f"Pruning {plan.root}: moving {len(plan.moved_directories)} "
@@ -256,7 +255,7 @@ def _label_components_by_image(decision, image_nodes):
         parents = [
             node.node_path for node in image_nodes
             if PurePosixPath(component.logical_node_path).is_relative_to(
-                PurePosixPath(join_node_path(node.node_path, "labels"))
+                PurePosixPath(join_node_path(node.node_path, LABELS_GROUP_NAME))
             )
         ]
         if len(parents) != 1:
@@ -265,6 +264,18 @@ def _label_components_by_image(decision, image_nodes):
             )
         components_by_image[parents[0]].append(component)
     return components_by_image
+
+
+def _label_records(components_by_image, image_nodes):
+    """Number every label component as ``(label id, parent image path, component)``."""
+    return tuple(
+        (f"label-{index}", image_path, component)
+        for index, (image_path, component) in enumerate(
+            (image_node.node_path, component)
+            for image_node in image_nodes
+            for component in components_by_image[image_node.node_path]
+        )
+    )
 
 
 def _build_shallow_manifest(decision, workflow_id, root, image_nodes,
@@ -282,14 +293,7 @@ def _build_shallow_manifest(decision, workflow_id, root, image_nodes,
     image_ids = {
         image.node_path: image.node_id for image in image_graph_nodes
     }
-    label_records = tuple(
-        (f"label-{index}", image_path, component)
-        for index, (image_path, component) in enumerate(
-            (image_node.node_path, component)
-            for image_node in image_nodes
-            for component in components_by_image[image_node.node_path]
-        )
-    )
+    label_records = _label_records(components_by_image, image_nodes)
     return ShallowManifest(
         workflow_id=UUID(str(workflow_id)),
         transfer_artifact=root.name,
@@ -428,6 +432,7 @@ def _declared_image_dataset_directories(
     root: Path,
     image_node_path: str,
 ) -> tuple[Path, ...]:
+    """Return the dataset (pyramid level) directories an image node declares, validated."""
     image_node = node_directory(root, image_node_path)
     attrs = read_attrs(image_node)
     multiscales = attrs.get("multiscales")
@@ -470,6 +475,7 @@ def _declared_image_dataset_directories(
 
 
 def _tree_size(root: Path) -> int:
+    """Total size in bytes of the regular files below ``root`` (diagnostics only: it stats everything)."""
     return sum(
         path.stat().st_size
         for path in root.rglob("*")

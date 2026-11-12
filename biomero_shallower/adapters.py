@@ -9,10 +9,12 @@ class Ngff04ZarrV2:
     # The evaluation and normalization modules are imported on use so that
     # importing this module (and so `capabilities`) stays light.
     def evaluate(self, root, manifest, **kwargs):
+        """Decide whether the returned store at ``root`` may be shallowed."""
         from .evaluation import evaluate_returned_zarr
         return evaluate_returned_zarr(root, manifest, **kwargs)
 
     def normalize(self, decision, workflow_id, **kwargs):
+        """Prune the store an eligible decision describes."""
         from .normalization import normalize_returned_zarr
         return normalize_returned_zarr(decision, workflow_id, **kwargs)
 

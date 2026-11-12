@@ -22,7 +22,6 @@ from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST, CanonicalInputManif
 from . import __version__
 from .capabilities import capabilities
 from .discovery import discover_ngff_nodes, find_returned_zarr_stores
-from .migration import migrate_shallow_store_v1
 from .operations import (
     ADAPTERS, KEEP_FULL_POLICY, RESULT_NORMALIZED, locked, normalize, validate_report,
 )
@@ -167,16 +166,20 @@ def _inspect(args):
 
 def _migrate_v1(args):
     """Upgrade one settled schema-1 shallow store."""
+    # Imported on use: the legacy migration models are needed by no other command.
+    from .migration import migrate_shallow_store_v1
     return migrate_shallow_store_v1(
         args.returned_zarr, backup_path=args.backup_dir).to_dict()
 
 
 def _verify(args, manifest):
+    """Validate a committed report against its store without rehashing pixels."""
     return validate_report(args.returned_zarr, manifest,
                            image=args.image, tool_version=__version__)
 
 
 def _normalize(args, manifest):
+    """Shallow one returned store, or keep it full, and return its report."""
     return normalize(args.returned_zarr, manifest,
                      contract=args.contract_version,
                      identity_workers=args.identity_workers,
@@ -185,6 +188,7 @@ def _normalize(args, manifest):
 
 
 def _normalize_tree(args, manifest):
+    """Normalize or recover every returned store under a directory; return the batch report."""
     return normalize_tree(args.returned_zarr, manifest, image=args.image,
                           task_id=args.task_id, workers=args.identity_workers,
                           recover_only=args.recover_only)

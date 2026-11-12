@@ -35,7 +35,7 @@ from .pixel_identity import (
     IsccBioIdentityProvider,
     read_zarr_v2_semantic_guard,
 )
-from .transaction import write_json
+from .filesystem import write_json
 
 
 class _LegacyModel(BaseModel):

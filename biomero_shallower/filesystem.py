@@ -15,6 +15,17 @@ def sync_directory(path):
             os.close(fd)
 
 
+def resolve_move(move=None, replace=None):
+    """Return the rename function: ``move``, else the deprecated ``replace``, else ``os.replace``.
+
+    ``replace`` is the former name of ``move``; passing both is an error.
+    ``os.replace`` is looked up at call time so tests can substitute it.
+    """
+    if move is not None and replace is not None:
+        raise TypeError("Pass move, or the deprecated replace, not both")
+    return move or replace or os.replace
+
+
 def temporary_path(path):
     """Return the sibling name an atomic write of ``path`` stages its content in."""
     path = Path(path)

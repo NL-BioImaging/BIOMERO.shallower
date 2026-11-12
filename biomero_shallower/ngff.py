@@ -9,7 +9,11 @@ class PixelIdentityError(RuntimeError):
     """An exact pixel identity or its filesystem metadata is ambiguous."""
 
 
+LABELS_GROUP_NAME = "labels"
+
+
 def read_json_object(path, description):
+    """Read a JSON object file, or raise `PixelIdentityError` naming ``description``."""
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -20,6 +24,10 @@ def read_json_object(path, description):
 
 
 def metadata_path(node):
+    """Return a node's attribute file: ``zarr.json`` (Zarr v3) or ``.zattrs`` (v2).
+
+    Raises when both format generations are present.
+    """
     node = Path(node)
     v3 = node / "zarr.json"
     if v3.exists():
@@ -30,6 +38,11 @@ def metadata_path(node):
 
 
 def group_metadata(node):
+    """Return ``(path, document, NGFF attributes, Zarr format)`` of a group node.
+
+    Raises for unsupported metadata: consolidated v3 metadata and anything but
+    OME-Zarr 0.5 on v3.
+    """
     path = metadata_path(node)
     doc = read_json_object(path, "NGFF group")
     if path.name == ".zattrs":
@@ -48,10 +61,12 @@ def group_metadata(node):
 
 
 def read_attrs(node):
+    """Return a node's NGFF attributes (the ``ome`` object on v3)."""
     return group_metadata(node)[2]
 
 
 def interchange_profile(node):
+    """Return the interchange profile name of a node's NGFF and Zarr format."""
     return {2: "ngff-0.4-zarr-v2", 3: "ngff-0.5-zarr-v3"}[group_metadata(node)[3]]
 
 
@@ -65,6 +80,7 @@ def encoded_attrs(node, attrs):
 
 
 def new_group_metadata(node, attrs, version):
+    """Return ``{file: content}`` that creates a group with ``attrs`` for a Zarr format version."""
     node = Path(node)
     if version == 2:
         return {node / ".zgroup": {"zarr_format": 2}, node / ".zattrs": attrs}
@@ -107,5 +123,5 @@ def write_attrs(node: Path, attrs: dict) -> None:
 
 def write_labels_group(node: Path, names: list[str], version: int) -> None:
     """Write the ``labels`` group metadata listing ``names`` for a Zarr format version."""
-    for path, value in new_group_metadata(node, {"labels": names}, version).items():
+    for path, value in new_group_metadata(node, {LABELS_GROUP_NAME: names}, version).items():
         write_json(path, value)

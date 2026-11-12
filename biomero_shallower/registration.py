@@ -20,8 +20,7 @@ from biomero_schema.zarr import (
     ZarrImportOptions,
 )
 
-from .ngff import join_node_path, node_directory
-from .pixel_identity import PixelIdentityError
+from .ngff import LABELS_GROUP_NAME, PixelIdentityError, join_node_path, node_directory
 
 __all__ = [
     "ShallowRegistration",
@@ -44,7 +43,6 @@ GROUP_MAPPINGS_FILE_ENV = "OMERO_BIOMERO_GROUP_MAPPINGS_FILE"
 DEFAULT_GROUP_MAPPINGS_FILE = "/auto-importer/config/group-mappings.json"
 # Folder values of a group mapping that mean "the import mount itself".
 ROOT_FOLDER_NAMES = {".", "root"}
-LABELS_GROUP_NAME = "labels"
 
 
 @dataclass(frozen=True)

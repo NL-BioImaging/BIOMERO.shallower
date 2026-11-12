@@ -9,8 +9,12 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from .ngff import join_node_path, node_directory, read_attrs, safe_node_path
-from .pixel_identity import PixelIdentityError
+from .ngff import (
+    LABELS_GROUP_NAME, PixelIdentityError, join_node_path, node_directory, read_attrs,
+    safe_node_path,
+)
+# Rollback folder names are owned by the prune journal; discovery must skip them
+# so it never walks (or returns stores found inside) a half-pruned tree.
 from .transaction import ROLLBACK_INFIX
 
 __all__ = ["NgffNode", "discover_ngff_nodes", "find_returned_zarr_stores"]
@@ -28,12 +32,13 @@ class NgffNode:
 
 
 def _discover_labels(root: Path, image_node_path: str) -> list[NgffNode]:
+    """Return the label nodes an image declares in its ``labels`` group, validated."""
     image_node = node_directory(root, image_node_path)
-    labels_group = image_node / "labels"
+    labels_group = image_node / LABELS_GROUP_NAME
     if not labels_group.is_dir():
         return []
     labels_attrs = read_attrs(labels_group)
-    labels = labels_attrs.get("labels")
+    labels = labels_attrs.get(LABELS_GROUP_NAME)
     if not isinstance(labels, list):
         raise PixelIdentityError(
             f"NGFF labels metadata has no labels list: {labels_group}"
@@ -45,7 +50,7 @@ def _discover_labels(root: Path, image_node_path: str) -> list[NgffNode]:
         if not isinstance(label, str):
             raise PixelIdentityError("NGFF label names must be strings")
         label = safe_node_path(label)
-        label_node_path = join_node_path(image_node_path, "labels", label)
+        label_node_path = join_node_path(image_node_path, LABELS_GROUP_NAME, label)
         if label_node_path in seen:
             raise PixelIdentityError(
                 f"Duplicate NGFF label node: {label_node_path}"
@@ -64,45 +69,46 @@ def _discover_labels(root: Path, image_node_path: str) -> list[NgffNode]:
     return discovered
 
 
+def _plate_image_paths(root: Path, plate) -> list[str]:
+    """Return the image node paths of every well of a Plate, validating its metadata."""
+    wells = plate.get("wells") if isinstance(plate, dict) else None
+    if not isinstance(wells, list):
+        raise PixelIdentityError("NGFF plate metadata has no wells list")
+    image_paths = []
+    for well in wells:
+        well_path = well.get("path") if isinstance(well, dict) else None
+        if not isinstance(well_path, str):
+            raise PixelIdentityError("NGFF plate well path is missing")
+        well_path = safe_node_path(well_path)
+        well_attrs = read_attrs(node_directory(root, well_path))
+        well_metadata = well_attrs.get("well")
+        images = (
+            well_metadata.get("images")
+            if isinstance(well_metadata, dict)
+            else None
+        )
+        if not isinstance(images, list):
+            raise PixelIdentityError(
+                f"NGFF well metadata has no images list: {well_path}"
+            )
+        for image in images:
+            image_path = image.get("path") if isinstance(image, dict) else None
+            if not isinstance(image_path, str):
+                raise PixelIdentityError(
+                    f"NGFF well image path is missing: {well_path}"
+                )
+            image_paths.append(join_node_path(well_path, safe_node_path(image_path)))
+    return image_paths
+
+
 def discover_ngff_nodes(zarr_root: str | Path) -> tuple[NgffNode, ...]:
     """Discover NGFF image-level nodes by declared image/plate metadata."""
     root = Path(zarr_root)
     attrs = read_attrs(root)
-    image_paths: list[str] = []
-
     if "multiscales" in attrs:
-        image_paths.append(".")
+        image_paths = ["."]
     elif "plate" in attrs:
-        plate = attrs["plate"]
-        wells = plate.get("wells") if isinstance(plate, dict) else None
-        if not isinstance(wells, list):
-            raise PixelIdentityError("NGFF plate metadata has no wells list")
-        for well in wells:
-            well_path = well.get("path") if isinstance(well, dict) else None
-            if not isinstance(well_path, str):
-                raise PixelIdentityError("NGFF plate well path is missing")
-            well_path = safe_node_path(well_path)
-            well_attrs = read_attrs(node_directory(root, well_path))
-            well_metadata = well_attrs.get("well")
-            images = (
-                well_metadata.get("images")
-                if isinstance(well_metadata, dict)
-                else None
-            )
-            if not isinstance(images, list):
-                raise PixelIdentityError(
-                    f"NGFF well metadata has no images list: {well_path}"
-                )
-            for image in images:
-                image_path = image.get("path") if isinstance(image, dict) else None
-                if not isinstance(image_path, str):
-                    raise PixelIdentityError(
-                        f"NGFF well image path is missing: {well_path}"
-                    )
-                image_paths.append(join_node_path(
-                    well_path,
-                    safe_node_path(image_path),
-                ))
+        image_paths = _plate_image_paths(root, attrs["plate"])
     else:
         raise PixelIdentityError(
             "Returned Zarr root is neither an NGFF image nor an NGFF plate"

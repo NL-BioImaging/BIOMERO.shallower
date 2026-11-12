@@ -11,15 +11,8 @@ from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST
 
 from biomero_shallower.transaction import (
     JOURNAL_NAME, begin, commit, pending_prune_journals, prune_was_committed,
-    read_journal, recover, remove_rollback, rollback_path,
+    recover, remove_rollback, restore_moved_arrays, rollback_path,
 )
-
-
-@pytest.fixture
-def store(tmp_path):
-    root = tmp_path / 'result.zarr'
-    root.mkdir()
-    return root
 
 
 def make_rollback(root, *, committed, arrays=('0',)):
@@ -88,6 +81,22 @@ def test_interrupted_recovery_of_uncommitted_prune_restores_arrays_on_rerun(stor
     assert not rollback.exists()
 
 
+def test_recovery_refuses_to_overwrite_an_array_present_in_both_places(store):
+    rollback = make_rollback(store, committed=False)
+    (store / '0').mkdir()
+    (store / '0' / 'chunk').write_bytes(b'newer')
+    with pytest.raises(ValueError, match='Conflicting recovery paths'):
+        recover(store)
+    assert (store / '0' / 'chunk').read_bytes() == b'newer'
+    assert (rollback / '0' / 'chunk').read_bytes() == b'x'
+
+
+def test_restore_moved_arrays_rejects_an_unsafe_path(store):
+    rollback = make_rollback(store, committed=False)
+    with pytest.raises(Exception, match='Unsafe'):
+        restore_moved_arrays(store, rollback, ['../escape'])
+
+
 def test_remove_rollback_refuses_an_uncommitted_journal(store):
     rollback = make_rollback(store, committed=False)
     with pytest.raises(ValueError, match='uncommitted'):
@@ -99,7 +108,7 @@ def test_folder_with_only_an_unfinished_journal_write_is_removed_as_empty(store)
     rollback = rollback_path(store, 'test')
     rollback.mkdir()
     (rollback / (JOURNAL_NAME + '.tmp')).write_text('{"schema"')
-    assert read_journal(rollback) is None
+    recover(store)
     assert not rollback.exists()
 
 

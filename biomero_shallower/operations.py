@@ -195,6 +195,7 @@ def _check_label_bindings(root, label_bindings, inherited_labels):
 
 
 def _same_source_binding(left, right):
+    """Whether two canonical sources name the same stored object and generation."""
     fields = ("storage_root", "relative_path", "node_path", "source_object_type",
               "source_object_id", "source_generation", "interchange_profile")
     return all(getattr(left, field) == getattr(right, field) for field in fields)
@@ -324,6 +325,7 @@ def _normalize_eligible(root, manifest, decision, adapter, report_for, *,
     committed_reports = []
 
     def commit(shallow_manifest):
+        """Write and validate the trusted report just before the prune commits."""
         committed_reports.append(report_for(shallow_manifest))
         write_json(root / SHALLOW_OPERATION_REPORT, committed_reports[-1].to_dict())
         validate_report(root, manifest, image=image, tool_version=__version__)

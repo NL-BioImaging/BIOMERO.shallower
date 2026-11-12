@@ -25,11 +25,10 @@ from biomero_schema.zarr import (
 )
 
 from .discovery import NgffNode, discover_ngff_nodes
-from .ngff import interchange_profile as node_profile, node_directory
+from .ngff import PixelIdentityError, interchange_profile as node_profile, node_directory
 from .output_declarations import declared_label_input, same_input_artifact
 from .pixel_identity import (
     IsccBioIdentityProvider,
-    PixelIdentityError,
     comparison_level_matches,
     pixel_identities_match,
     read_zarr_comparison_levels,
@@ -136,6 +135,7 @@ class _KeepFull(Exception):
     """
 
     def __init__(self, reason: str, **fields):
+        """Record the keep-full ``reason`` and the extra decision ``fields``."""
         super().__init__(reason)
         self.reason = reason
         self.fields = fields
@@ -151,14 +151,17 @@ class _StoreView:
 
     @property
     def image_nodes(self) -> tuple[NgffNode, ...]:
+        """The store's image nodes."""
         return tuple(node for node in self.nodes if node.role == "image")
 
     @property
     def label_nodes(self) -> tuple[NgffNode, ...]:
+        """The store's label nodes."""
         return tuple(node for node in self.nodes if node.role == "label")
 
     @property
     def label_paths(self) -> tuple[str, ...]:
+        """The node paths of the store's label nodes."""
         return tuple(node.node_path for node in self.label_nodes)
 
 
@@ -353,12 +356,11 @@ def _unmatched_reason(matching_inputs, bound_by_name):
 
 def _eligible_decision(root, store, match, provider, identity_workers):
     """Identify the labels and build the eligible decision for a matched input."""
+    # The matched input is one of the candidates `_read_store` already filtered
+    # by the store's Zarr profile, so its profile needs no second check here.
     keep_full_fields = dict(image_identities=match.image_identities,
                             label_node_paths=store.label_paths,
                             refreshed_inputs=match.refreshed_inputs)
-    if any(source.interchange_profile != store.profile
-           for source in _sources_by_node_path(match.matched_input).values()):
-        raise _KeepFull(REASON_UNSUPPORTED_CANONICAL_PROFILE, **keep_full_fields)
     try:
         label_identities = _identities_for_nodes(
             root, store.label_nodes, provider, max_workers=identity_workers)
@@ -401,6 +403,7 @@ def _has_interchange_profile(item: CanonicalInput, profile: str) -> bool:
 
 
 def _with_sources(item, sources):
+    """Return the input with its image sources replaced by ``sources`` (keyed by node path)."""
     if item.plate_source:
         plate = item.plate_source.model_copy(update={"images": tuple(
             image.model_copy(update={"source": sources[image.image_node_path]})
@@ -410,12 +413,14 @@ def _with_sources(item, sources):
 
 
 def _source_path(source, storage_roots):
+    """Return the managed canonical store of a source, or None if it is not mounted here."""
     if storage_roots and source.storage_root in storage_roots:
         return resolve_managed_source_path(source, storage_roots)
     return None
 
 
 def _guard_matches_source(guard, source):
+    """Whether a returned image's shape, dtype, axes and transforms equal the source's record."""
     identity = source.pixel_identity
     metadata = source.image_metadata
     if identity is not None:
@@ -593,6 +598,7 @@ def _identity_for_node(
     identity_provider: IsccBioIdentityProvider,
     *, dataset_path=None,
 ) -> PixelIdentity:
+    """Compute the pixel identity of a node, optionally of one pyramid level."""
     guard = read_zarr_semantic_guard(root, node.node_path)
     return identity_provider.generate(
         root,
