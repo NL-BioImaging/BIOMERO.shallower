@@ -134,14 +134,14 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
     if failure_policy != "keep-full":
         raise ValueError("Unknown failure policy")
     root = Path(root).absolute()
-    logger.debug("Normalizing %s: contract=%s, workers=%s, image=%s, task=%s",
-                 root, contract, identity_workers, image, task_id)
+    logger.debug(f"Normalizing {root}: contract={contract}, workers={identity_workers}, "
+                 f"image={image}, task={task_id}")
     if root.is_symlink():
         raise ValueError("Returned Zarr cannot be a symlink")
     with locked(root):
         recover(root)
         if (root / SHALLOW_OPERATION_REPORT).exists():
-            logger.info("Reusing committed report of %s", root)
+            logger.info(f"Reusing committed report of {root}")
             return validate_report(root, manifest, image=image, tool_version=__version__)
         if (root / SHALLOW_COLLECTION_MANIFEST).exists():
             raise ValueError("Shallow result has no committed trusted report")
@@ -167,8 +167,8 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
             profile = (source.plate_source.interchange_profile if source.plate_source
                        else source.source.interchange_profile)
             if profile != adapter.profile:
-                logger.warning("Keeping %s full: canonical profile %s differs from %s",
-                               root, profile, adapter.profile)
+                logger.warning(f"Keeping {root} full: canonical profile {profile} "
+                               f"differs from {adapter.profile}")
                 decision = replace(decision, outcome="keep-full",
                                    reason="unsupported-canonical-profile")
         evaluated = time.monotonic()
@@ -209,14 +209,14 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
                     write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
             except Exception as exc:
                 # Recovery must succeed before a full-result fallback is safe.
-                logger.warning("Normalization of %s failed: %s", root, exc, exc_info=True)
+                logger.warning(f"Normalization of {root} failed: {exc}", exc_info=True)
                 recover(root)
                 if (root / SHALLOW_OPERATION_REPORT).exists():
-                    logger.info("Normalization of %s had committed before the failure", root)
+                    logger.info(f"Normalization of {root} had committed before the failure")
                     return validate_report(root, manifest, image=image, tool_version=__version__)
-                logger.warning("Keeping %s full: normalization-failed", root)
+                logger.warning(f"Keeping {root} full: normalization-failed")
                 report = report_for(reason=f"normalization-failed: {exc}")
         if root.is_dir() and report.manifest is None:
             write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
-        logger.info("Normalized %s: result=%s, reason=%s", root, report.result, report.reason)
+        logger.info(f"Normalized {root}: result={report.result}, reason={report.reason}")
         return report

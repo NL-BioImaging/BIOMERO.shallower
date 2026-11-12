@@ -34,8 +34,8 @@ def normalize_tree(root, manifest, *, image, task_id, workers=1,
     root = Path(root)
     receipts = []
     stores = find_returned_zarr_stores(root)
-    logger.info("Found %d returned Zarr stores under %s (recover_only=%s)",
-                len(stores), root, recover_only)
+    logger.info(f"Found {len(stores)} returned Zarr stores under {root} "
+                f"(recover_only={recover_only})")
     for store in stores:
         if recover_only:
             with locked(store):

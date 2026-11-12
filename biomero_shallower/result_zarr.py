@@ -464,8 +464,8 @@ def materialize_shallow_zarr(
             f"Shallow materialization destination already exists: {destination}"
         )
     collection_root = resolve_managed_source_path(reference, storage_roots)
-    logger.info("Materializing image %s from %s to %s",
-                reference.image_node_path, collection_root, destination)
+    logger.info(f"Materializing image {reference.image_node_path} "
+                f"from {collection_root} to {destination}")
     manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
     try:
         manifest = ShallowManifest.from_dict(json.loads(
@@ -586,10 +586,10 @@ def materialize_shallow_zarr(
         replace(staging, destination)
     finally:
         if staging.exists():
-            logger.debug("Removing materialization staging %s", staging)
+            logger.debug(f"Removing materialization staging {staging}")
             shutil.rmtree(staging, ignore_errors=True)
 
-    logger.info("Materialized %s with %d labels", destination, len(managed_labels))
+    logger.info(f"Materialized {destination} with {len(managed_labels)} labels")
     return MaterializedShallowResult(
         destination=destination,
         manifest=manifest,
@@ -611,7 +611,7 @@ def _materialize_shallow_plate_zarr(
             f"Shallow materialization destination already exists: {destination}"
         )
     collection_root = resolve_managed_source_path(reference, storage_roots)
-    logger.info("Materializing Plate from %s to %s", collection_root, destination)
+    logger.info(f"Materializing Plate from {collection_root} to {destination}")
     manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
     try:
         manifest = ShallowManifest.from_dict(json.loads(
@@ -736,10 +736,10 @@ def _materialize_shallow_plate_zarr(
         replace(staging, destination)
     finally:
         if staging.exists():
-            logger.debug("Removing materialization staging %s", staging)
+            logger.debug(f"Removing materialization staging {staging}")
             shutil.rmtree(staging, ignore_errors=True)
 
-    logger.info("Materialized Plate %s with %d labels", destination, len(managed_labels))
+    logger.info(f"Materialized Plate {destination} with {len(managed_labels)} labels")
     return MaterializedShallowResult(
         destination=destination,
         manifest=manifest,
@@ -1129,8 +1129,7 @@ def normalize_returned_zarr(
         )
 
     from .transaction import begin, recover, write_json, sync_directory
-    logger.info("Pruning %s: moving %d array directories to %s",
-                root, len(minimal_omitted), rollback)
+    logger.info(f"Pruning {root}: moving {len(minimal_omitted)} array directories to {rollback}")
     moved_directories = []
     original_attrs = {
         metadata_path(_node_directory(root, node.node_path)):
@@ -1203,9 +1202,9 @@ def normalize_returned_zarr(
             before_commit(manifest)
         journal["committed"] = True
         write_json(rollback / "journal.json", journal)
-        logger.info("Committed prune of %s", root)
+        logger.info(f"Committed prune of {root}")
     except Exception:
-        logger.info("Prune of %s failed; rolling back", root)
+        logger.info(f"Prune of {root} failed; rolling back")
         # Restore metadata before the arrays so readers never see valid
         # multiscales pointing at only a partially restored pyramid.
         recover(root)
@@ -1214,7 +1213,7 @@ def normalize_returned_zarr(
     # Validation is the commit boundary. Cleanup only unlinks verified
     # duplicate pixels, so it must not attempt a rollback after a partial
     # filesystem deletion.
-    logger.info("Removing rollback folder %s", rollback)
+    logger.info(f"Removing rollback folder {rollback}")
     shutil.rmtree(rollback)
     return NormalizedShallowResult(
         store_path=root,
@@ -1277,17 +1276,17 @@ def evaluate_returned_zarr(
     store, which makes failures and unsupported cases unconditionally fail
     open to ``keep-full``.
     """
-    logger.debug("Evaluating %s against %d canonical inputs with %d identity workers",
-                 zarr_root, len(canonical_inputs.inputs) if canonical_inputs else 0,
-                 identity_workers)
+    input_count = len(canonical_inputs.inputs) if canonical_inputs else 0
+    logger.debug(f"Evaluating {zarr_root} against {input_count} canonical inputs "
+                 f"with {identity_workers} identity workers")
     decision = _evaluate_returned_zarr(
         zarr_root, canonical_inputs, identity_provider=identity_provider,
         identity_workers=identity_workers, storage_roots=storage_roots)
-    logger.debug("Decision for %s: outcome=%s, reason=%s, basis=%s, matched inputs=%d",
-                 decision.store_path, decision.outcome, decision.reason,
-                 decision.decision_basis, len(decision.matched_inputs))
+    logger.debug(f"Decision for {decision.store_path}: outcome={decision.outcome}, "
+                 f"reason={decision.reason}, basis={decision.decision_basis}, "
+                 f"matched inputs={len(decision.matched_inputs)}")
     if decision.outcome == "keep-full" and decision.reason.startswith(_FALLBACK_REASONS):
-        logger.warning("Keeping %s full: %s", decision.store_path, decision.reason)
+        logger.warning(f"Keeping {decision.store_path} full: {decision.reason}")
     return decision
 
 
