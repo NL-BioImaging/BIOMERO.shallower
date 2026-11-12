@@ -9,6 +9,7 @@ from rocrate.utils import as_list
 
 
 def _read_crate(path):
+    """Load an RO-Crate, rejecting duplicate or ambiguous entity IDs."""
     metadata = json.loads(path.read_text(encoding='utf-8'))
     identifiers = [entry['@id'] for entry in metadata['@graph']]
     crate = ROCrate(metadata)
@@ -20,6 +21,7 @@ def _read_crate(path):
 
 
 def _references(entity, key):
+    """Return the entities a property references; an unresolved reference is an error."""
     values = as_list(entity.get(key, []))
     if any(not isinstance(value, Entity) for value in values):
         raise ValueError(f'Unresolved RO-Crate reference: {key}')
@@ -27,6 +29,7 @@ def _references(entity, key):
 
 
 def _local_path(value):
+    """Return a normalized relative path, or None for URLs, absolute paths and escapes."""
     parsed = urlsplit(value)
     if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
         return None
@@ -37,6 +40,7 @@ def _local_path(value):
 
 
 def _artifact_stem(value):
+    """Return a file name without its Zarr or TIFF extension."""
     # BIOMERO conversion preserves the input basename while changing format.
     name = PurePosixPath(value).name
     for suffix in ('.ome.zarr', '.ome.tiff', '.ome.tif', '.zarr', '.tiff', '.tif'):
@@ -46,6 +50,7 @@ def _artifact_stem(value):
 
 
 def same_input_artifact(left, right):
+    """Whether two artifact names are the same input in different formats."""
     return bool(left and right and _artifact_stem(left) == _artifact_stem(right))
 
 
