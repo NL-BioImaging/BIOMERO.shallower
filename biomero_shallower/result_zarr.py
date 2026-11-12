@@ -1117,7 +1117,7 @@ def normalize_returned_zarr(
             f"Returned store already has {SHALLOW_COLLECTION_MANIFEST}"
         )
 
-    from .transaction import begin, recover, write_json, sync_directory
+    from .transaction import begin, recover, remove_rollback, write_json, sync_directory
     moved_directories = []
     original_attrs = {
         metadata_path(_node_directory(root, node.node_path)):
@@ -1199,7 +1199,7 @@ def normalize_returned_zarr(
     # Validation is the commit boundary. Cleanup only unlinks verified
     # duplicate pixels, so it must not attempt a rollback after a partial
     # filesystem deletion.
-    shutil.rmtree(rollback)
+    remove_rollback(rollback)
     return NormalizedShallowResult(
         store_path=root,
         manifest=manifest,

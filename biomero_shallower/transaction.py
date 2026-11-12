@@ -38,6 +38,23 @@ def begin(root, rollback, directories, attrs):
     return state
 
 
+def remove_rollback(rollback):
+    """Delete a rollback folder keeping its journal until last.
+
+    An interruption then leaves a journal that `recover` can finish.
+    """
+    rollback = Path(rollback)
+    for child in rollback.iterdir():
+        if child.name == "journal.json":
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    (rollback / "journal.json").unlink(missing_ok=True)
+    rollback.rmdir()
+
+
 def recover(root):
     from .result_zarr import _write_bytes, _safe_node_path
     root = Path(root)
@@ -67,5 +84,5 @@ def recover(root):
                 _write_bytes(root / _safe_node_path(relative), base64.b64decode(data))
             for name in (".biomero-shallow.json", ".biomero-shallow-report.json"):
                 (root / name).unlink(missing_ok=True)
-        shutil.rmtree(rollback)
+        remove_rollback(rollback)
         sync_directory(root.parent)
