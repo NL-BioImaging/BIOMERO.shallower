@@ -715,7 +715,7 @@ def test_normalization_moves_arrays_without_copying_retained_tree(
         raise AssertionError("normalization must not copy the retained tree")
 
     monkeypatch.setattr(
-        "biomero_shallower.result_zarr.shutil.copytree",
+        "biomero_shallower.materialization.shutil.copytree",
         fail_copytree,
     )
 

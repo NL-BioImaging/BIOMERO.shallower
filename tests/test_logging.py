@@ -10,7 +10,7 @@ import pytest
 from test_result_zarr import _make_image, _manifest, _input, _identity, IdentityProvider
 from biomero_shallower.adapters import Ngff04ZarrV2
 from biomero_shallower.operations import FORMAT_ADAPTERS, normalize
-from biomero_shallower.result_zarr import _keep_full, evaluate_returned_zarr
+from biomero_shallower.evaluation import _keep_full, evaluate_returned_zarr
 from biomero_shallower.transaction import recover
 
 
@@ -69,7 +69,7 @@ def test_normalization_failure_is_warned_once_with_traceback(tmp_path, caplog):
             normalize(root, _manifest(_input(0)), identity_provider=IdentityProvider(_identity()))
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any('failed: injected' in r.getMessage() and r.exc_info for r in warnings)
-    assert not any(r.name.endswith('result_zarr') for r in warnings)
+    assert not any(r.name.endswith("normalization") for r in warnings)
 
 
 def test_profile_mismatch_is_warned(tmp_path, caplog):

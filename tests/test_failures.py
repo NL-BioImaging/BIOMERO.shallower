@@ -11,7 +11,7 @@ from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST
 from biomero_shallower.operations import normalize
 from biomero_shallower.result_zarr import is_failure_reason
 from biomero_shallower.transaction import (
-    pending_prune_journals, prune_committed, recover, remove_rollback,
+    pending_prune_journals, prune_was_committed, recover, remove_rollback,
 )
 
 
@@ -119,7 +119,7 @@ def test_interrupted_uncommitted_recovery_restores_arrays_on_rerun(tmp_path):
     root, rollback = _committed_rollback(tmp_path)
     (rollback / 'journal.json').write_text(json.dumps(
         {'schema': 1, 'committed': False, 'moves': ['0'], 'attrs': {}}))
-    with patch('biomero_shallower.transaction.remove_rollback', side_effect=KeyboardInterrupt):
+    with patch('biomero_shallower.transaction._delete_rollback_folder', side_effect=KeyboardInterrupt):
         with pytest.raises(KeyboardInterrupt):
             recover(root)
     assert (root / '0' / 'chunk').read_bytes() == b'x'
@@ -134,7 +134,7 @@ def test_interrupted_uncommitted_recovery_restores_arrays_on_rerun(tmp_path):
     (None, True, True),
     (None, False, False),
 ])
-def test_prune_committed_from_journal_and_manifest(tmp_path, journal_committed, manifest, expected):
+def test_prune_was_committed_from_journal_and_manifest(tmp_path, journal_committed, manifest, expected):
     root = tmp_path / 'result.zarr'
     root.mkdir()
     if manifest:
@@ -144,11 +144,10 @@ def test_prune_committed_from_journal_and_manifest(tmp_path, journal_committed, 
         rollback.mkdir()
         (rollback / 'journal.json').write_text(json.dumps(
             {'schema': 1, 'committed': journal_committed, 'moves': [], 'attrs': {}}))
-        assert pending_prune_journals(root) == [
-            {'schema': 1, 'committed': journal_committed, 'moves': [], 'attrs': {}}]
+        assert [journal.committed for journal in pending_prune_journals(root)] == [journal_committed]
     else:
         assert pending_prune_journals(root) == []
-    assert prune_committed(root) is expected
+    assert prune_was_committed(root) is expected
 
 
 @pytest.mark.parametrize('reason, failure', [
@@ -176,5 +175,5 @@ def test_is_failure_reason(reason, failure):
 def test_production_does_not_measure_recursive_bytes(tmp_path):
     root = tmp_path / 'result.zarr'
     _make_image(root, labels=('cells',))
-    with patch('biomero_shallower.result_zarr._tree_size', side_effect=AssertionError('byte scan')):
+    with patch('biomero_shallower.normalization._tree_size', side_effect=AssertionError('byte scan')):
         assert normalize(root, _manifest(_input(0)), identity_provider=IdentityProvider(_identity())).result == 'normalized'

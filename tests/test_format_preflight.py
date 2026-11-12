@@ -40,8 +40,8 @@ def test_cross_format_skips_discovery_and_identity(tmp_path, version, plate, bin
         (root / TRANSFER_INPUT_MARKER).write_text(json.dumps(item.to_dict()))
     before = snapshot(root)
 
-    with patch("biomero_shallower.result_zarr.discover_ngff_nodes") as discover, \
-            patch("biomero_shallower.result_zarr.IsccBioIdentityProvider") as identity:
+    with patch("biomero_shallower.evaluation.discover_ngff_nodes") as discover, \
+            patch("biomero_shallower.evaluation.IsccBioIdentityProvider") as identity:
         decision = evaluate_returned_zarr(root, _manifest(item))
 
     assert decision.outcome == "keep-full"

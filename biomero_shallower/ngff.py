@@ -1,6 +1,8 @@
 """Filesystem metadata for NGFF 0.4/v2 and 0.5/v3, without reading pixels."""
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from .filesystem import write_json
 
 
 class PixelIdentityError(RuntimeError):
@@ -72,3 +74,33 @@ def new_group_metadata(node, attrs, version):
             "attributes": {"ome": {"version": "0.5", **attrs}},
         }}
     raise PixelIdentityError(f"Unsupported Zarr format: {version}")
+
+
+def safe_node_path(value: str) -> str:
+    if not value or "\\" in value:
+        raise PixelIdentityError(f"Unsafe NGFF node path: {value!r}")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise PixelIdentityError(f"Unsafe NGFF node path: {value!r}")
+    return value
+
+
+def join_node_path(*parts: str) -> str:
+    useful = [part for part in parts if part and part != "."]
+    return str(PurePosixPath(*useful)) if useful else "."
+
+
+def node_directory(root: Path, node_path: str) -> Path:
+    if node_path == ".":
+        return root
+    return root.joinpath(*PurePosixPath(node_path).parts)
+
+
+def write_attrs(node: Path, attrs: dict) -> None:
+    path, value = encoded_attrs(node, attrs)
+    write_json(path, value)
+
+
+def write_labels_group(node: Path, names: list[str], version: int) -> None:
+    for path, value in new_group_metadata(node, {"labels": names}, version).items():
+        write_json(path, value)

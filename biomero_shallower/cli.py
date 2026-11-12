@@ -18,7 +18,7 @@ from . import __version__
 from .operations import (
     ADAPTERS, KEEP_FULL_POLICY, RESULT_NORMALIZED, locked, normalize, validate_report,
 )
-from .result_zarr import discover_ngff_nodes, find_returned_zarr_stores
+from .discovery import discover_ngff_nodes, find_returned_zarr_stores
 from .transaction import recover, write_json
 
 logger = logging.getLogger(__name__)

@@ -7,11 +7,11 @@ class Ngff04ZarrV2:
     profile = "ngff-0.4-zarr-v2"
 
     def evaluate(self, root, manifest, **kwargs):
-        from .result_zarr import evaluate_returned_zarr
+        from .evaluation import evaluate_returned_zarr
         return evaluate_returned_zarr(root, manifest, **kwargs)
 
     def normalize(self, decision, workflow_id, **kwargs):
-        from .result_zarr import normalize_returned_zarr
+        from .normalization import normalize_returned_zarr
         return normalize_returned_zarr(decision, workflow_id, **kwargs)
 
 

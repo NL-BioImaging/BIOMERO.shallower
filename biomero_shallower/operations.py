@@ -16,7 +16,7 @@ from . import __version__
 from .adapters import ADAPTERS, FORMAT_ADAPTERS
 from .ngff import PixelIdentityError, group_metadata, read_attrs
 from .pixel_identity import pixel_identities_match
-from .result_zarr import (
+from .evaluation import (
     OUTCOME_KEEP_FULL, REASON_NORMALIZATION_FAILED, REASON_UNSUPPORTED_CANONICAL_PROFILE,
 )
 from .transaction import recover, write_json
