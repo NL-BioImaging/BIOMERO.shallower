@@ -118,6 +118,10 @@ the consumer for cache persistence, including failed result matches.
 docker run --rm --network none cellularimagingcf/biomero-shallower:0.1.0 health
 ```
 
+Python callers get the image for the installed package version from
+`biomero_shallower.capabilities.helper_image()`; see
+[Releases](releases.md) for the tag scheme.
+
 The image runs as UID/GID `10001:10001`. Bind the returned result directory
 writable and the canonical-input manifest read-only. The helper does not need
 access to transferred input copies or original managed canonical stores. Writable results require

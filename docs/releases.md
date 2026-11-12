@@ -60,7 +60,13 @@ label matches the normalized package version. Stable releases publish the full
 version, a moving major/minor alias, and `latest`; for example, `v0.1.0`
 publishes `0.1.0`, `0.1`, and `latest` after smoke testing. Prereleases publish
 only their full version and do not update the stable aliases. Pin the full
-prerelease image tag when deploying a beta. CI checks the built container's
+prerelease image tag when deploying a beta. Python callers can ask the
+installed package for it: `biomero_shallower.capabilities.helper_image()`
+returns `cellularimagingcf/biomero-shallower:0.1.0-beta.9` for `0.1.0b9`, and
+`0.1.0-rc.1` for `0.1.0rc1`. Development versions have no published image and
+raise `ValueError`. The mapping assumes prerelease tags are dotted
+`-alpha.N`, `-beta.N` or `-rc.N` (for example `v0.1.0-rc.1`); other tag
+spellings are not matched, so keep to that form when tagging. CI checks the built container's
 reported version and OCI label against the package version.
 
 Untagged checkouts have SCM-derived development versions. Bare Docker builds
