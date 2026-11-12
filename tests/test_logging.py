@@ -10,7 +10,7 @@ import pytest
 from test_result_zarr import _make_image, _manifest, _input, _identity, IdentityProvider
 from biomero_shallower.adapters import Ngff04ZarrV2
 from biomero_shallower.operations import FORMAT_ADAPTERS, normalize
-from biomero_shallower.result_zarr import ReturnedZarrDecision, evaluate_returned_zarr
+from biomero_shallower.result_zarr import _keep_full, evaluate_returned_zarr
 from biomero_shallower.transaction import recover
 
 
@@ -54,10 +54,8 @@ def test_recovery_is_logged(tmp_path, caplog):
     ('no-input-identity-match', False),
 ])
 def test_keep_full_reason_log_level(tmp_path, caplog, reason, warned):
-    decision = ReturnedZarrDecision(store_path=tmp_path, outcome='keep-full', reason=reason)
-    with patch('biomero_shallower.result_zarr._evaluate_returned_zarr', return_value=decision):
-        with caplog.at_level(logging.DEBUG, logger='biomero_shallower'):
-            evaluate_returned_zarr(tmp_path, None)
+    with caplog.at_level(logging.DEBUG, logger='biomero_shallower'):
+        _keep_full(tmp_path, reason)
     assert any(r.levelno == logging.WARNING for r in caplog.records) is warned
 
 

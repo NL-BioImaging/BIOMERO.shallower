@@ -15,11 +15,16 @@ from biomero_schema.shallower import (
 from biomero_schema.zarr import CanonicalInputManifest
 
 from . import __version__
-from .operations import ADAPTERS, locked, normalize, validate_report
+from .operations import (
+    ADAPTERS, KEEP_FULL_POLICY, RESULT_NORMALIZED, locked, normalize, validate_report,
+)
 from .result_zarr import discover_ngff_nodes, find_returned_zarr_stores
 from .transaction import recover, write_json
 
 logger = logging.getLogger(__name__)
+
+LOG_LEVEL = logging.INFO
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 def load_manifest(path):
@@ -49,7 +54,7 @@ def normalize_tree(root, manifest, *, image, task_id, workers=1,
         else:
             report = normalize(store, manifest, image=image, task_id=task_id,
                                identity_workers=workers)
-        if report.result == "normalized" or report.refreshed_inputs is not None:
+        if report.result == RESULT_NORMALIZED or report.refreshed_inputs is not None:
             receipts.append(RemoteShallowReceipt(
                 schema=1, image=image, toolVersion=__version__,
                 reportSha256=hashlib.sha256(
@@ -62,6 +67,15 @@ def normalize_tree(root, manifest, *, image, task_id, workers=1,
                                receipts=tuple(receipts))
     write_json(root / SHALLOW_BATCH_REPORT, batch.to_dict())
     return batch
+
+
+def configure_logging(level=LOG_LEVEL, log_format=LOG_FORMAT):
+    """Log to stderr at ``level`` unless the caller already configured logging.
+
+    Library modules never configure logging. Standard output stays the single
+    JSON document, so logs go to stderr (the Slurm job log for helper runs).
+    """
+    logging.basicConfig(level=level, format=log_format)
 
 
 def main(argv=None):
@@ -81,16 +95,14 @@ def main(argv=None):
         command.add_argument("--contract-version", required=True, type=int, choices=ADAPTERS)
         command.add_argument("--report", required=True, type=Path)
         command.add_argument("--identity-workers", type=int, default=1)
-        command.add_argument("--failure-policy", choices=["keep-full"], default="keep-full")
+        command.add_argument("--failure-policy", choices=[KEEP_FULL_POLICY], default=KEEP_FULL_POLICY)
         command.add_argument("--image", default=os.getenv("BIOMERO_SHALLOWER_IMAGE"))
         command.add_argument("--task-id")
         command.add_argument("--benchmark-bytes", action="store_true")
         if name == "normalize-tree":
             command.add_argument("--recover-only", action="store_true")
     args = parser.parse_args(argv)
-    # Library modules never configure logging; do it here only if the caller has not.
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    configure_logging()
     try:
         if args.command == "health":
             from .capabilities import capabilities

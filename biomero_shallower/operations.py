@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from dataclasses import replace
+from functools import partial
 import json
 import logging
 import os
@@ -15,9 +16,21 @@ from . import __version__
 from .adapters import ADAPTERS, FORMAT_ADAPTERS
 from .ngff import PixelIdentityError, group_metadata, read_attrs
 from .pixel_identity import pixel_identities_match
+from .result_zarr import OUTCOME_KEEP_FULL
 from .transaction import recover, write_json
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CONTRACT = 1
+KEEP_FULL_POLICY = "keep-full"
+NORMALIZATION_FAILED = "normalization-failed"
+# Values of the operation report's ``result``.
+RESULT_NORMALIZED = "normalized"
+RESULT_KEPT_FULL = "kept-full"
+# Versions recorded in every operation report.
+REPORT_SCHEMA = 2
+INPUT_CONTRACT = 1
+OUTPUT_CONTRACT = 2
 
 
 @contextmanager
@@ -124,14 +137,19 @@ def _same_source_binding(left, right):
     return all(getattr(left, field) == getattr(right, field) for field in fields)
 
 
-def normalize(root, manifest, *, contract=1, identity_workers=1,
-              failure_policy="keep-full", image=None, task_id=None,
+def normalize(root, manifest, *, contract=DEFAULT_CONTRACT, identity_workers=1,
+              failure_policy=KEEP_FULL_POLICY, image=None, task_id=None,
               identity_provider=None, measure_bytes=False,
               storage_roots=None):
+    """Shallow one returned store, or keep it full, and return the operation report.
+
+    Recovers any interrupted prune first and reuses an already committed
+    report, so rerunning after an interruption is safe.
+    """
     if contract not in ADAPTERS:
         raise ValueError(f"Unknown contract version: {contract}")
     adapter = ADAPTERS[contract]
-    if failure_policy != "keep-full":
+    if failure_policy != KEEP_FULL_POLICY:
         raise ValueError("Unknown failure policy")
     root = Path(root).absolute()
     logger.debug(f"Normalizing {root}: contract={contract}, workers={identity_workers}, "
@@ -145,78 +163,125 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
             return validate_report(root, manifest, image=image, tool_version=__version__)
         if (root / SHALLOW_COLLECTION_MANIFEST).exists():
             raise ValueError("Shallow result has no committed trusted report")
-        # Never traverse a link into a canonical store, even through metadata.
-        if root.is_symlink():
-            raise ValueError("Returned Zarr cannot be a symlink")
-        if root.is_dir():
-            for directory, dirs, names in os.walk(root):
-                if any((Path(directory) / name).is_symlink() for name in dirs + names):
-                    raise ValueError("Returned Zarr contains a symlink")
-        try:
-            adapter = FORMAT_ADAPTERS[group_metadata(root)[3]]
-        except PixelIdentityError:
-            # Discovery records the unsupported metadata as a keep-full result.
-            pass
+        _reject_symlinks(root)
+        adapter = _adapter_for_store(root, default=adapter)
         started = time.monotonic()
-        decision = adapter.evaluate(root, manifest,
-                                    identity_workers=identity_workers,
-                                    identity_provider=identity_provider,
-                                    storage_roots=storage_roots)
-        if decision.eligible:
-            source = decision.matched_inputs[0]
-            profile = (source.plate_source.interchange_profile if source.plate_source
-                       else source.source.interchange_profile)
-            if profile != adapter.profile:
-                logger.warning(f"Keeping {root} full: canonical profile {profile} "
-                               f"differs from {adapter.profile}")
-                decision = replace(decision, outcome="keep-full",
-                                   reason="unsupported-canonical-profile")
+        decision = _evaluate_store(adapter, root, manifest, identity_workers,
+                                   identity_provider, storage_roots)
         evaluated = time.monotonic()
+        report_for = partial(_operation_report, root, manifest, decision, adapter,
+                             image, task_id, started, evaluated)
 
-        def report_for(shallow_manifest=None, reason=None):
-            return ShallowOperationReport(
-                schema=2, toolVersion=__version__, image=image,
-                inputContract=1, outputContract=2, adapter=adapter.profile,
-                canonicalInputs=manifest, artifact=root.name,
-                refreshedInputs=(manifest.model_copy(update={"inputs": tuple(
-                    next((refreshed for refreshed in decision.refreshed_inputs
-                          if refreshed.ordinal == item.ordinal), item)
-                    for item in manifest.inputs)}) if decision.refreshed_inputs else None),
-                decision=decision.outcome, reason=reason or decision.reason,
-                result="normalized" if shallow_manifest else "kept-full",
-                manifest=shallow_manifest,
-                timings={"identity": evaluated - started,
-                         "normalization": time.monotonic() - evaluated},
-                slurmJobId=os.getenv("SLURM_JOB_ID"), taskId=task_id,
-            )
-
-        report = report_for()
         if decision.eligible:
-            def commit(shallow_manifest):
-                nonlocal report
-                report = report_for(shallow_manifest)
-                write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
-                validate_report(root, manifest, image=image, tool_version=__version__)
-            try:
-                normalized = adapter.normalize(
-                    decision, manifest.workflow_id,
-                    before_commit=commit, measure_bytes=measure_bytes)
-                if measure_bytes:
-                    report = report.model_copy(update={
-                        "bytes_before": normalized.bytes_before,
-                        "bytes_after": normalized.bytes_after,
-                    })
-                    write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
-            except Exception as exc:
-                # Recovery must succeed before a full-result fallback is safe.
-                logger.warning(f"Normalization of {root} failed: {exc}", exc_info=True)
-                recover(root)
-                if (root / SHALLOW_OPERATION_REPORT).exists():
-                    logger.info(f"Normalization of {root} had committed before the failure")
-                    return validate_report(root, manifest, image=image, tool_version=__version__)
-                logger.warning(f"Keeping {root} full: normalization-failed")
-                report = report_for(reason=f"normalization-failed: {exc}")
-        if root.is_dir() and report.manifest is None:
+            report = _normalize_eligible(root, manifest, decision, adapter, report_for,
+                                         image=image, measure_bytes=measure_bytes)
+        else:
+            report = report_for()
+        store_still_exists = root.is_dir()
+        if store_still_exists and report.manifest is None:
             write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
         logger.info(f"Normalized {root}: result={report.result}, reason={report.reason}")
         return report
+
+
+def _reject_symlinks(root):
+    """Never traverse a link into a canonical store, even through metadata."""
+    if root.is_symlink():
+        raise ValueError("Returned Zarr cannot be a symlink")
+    if root.is_dir():
+        for directory, dirs, names in os.walk(root):
+            if any((Path(directory) / name).is_symlink() for name in dirs + names):
+                raise ValueError("Returned Zarr contains a symlink")
+
+
+def _adapter_for_store(root, default):
+    """Pick the adapter for the store's Zarr format, or the contract's default."""
+    try:
+        return FORMAT_ADAPTERS[group_metadata(root)[3]]
+    except PixelIdentityError:
+        # Discovery records the unsupported metadata as a keep-full result.
+        return default
+
+
+def _evaluate_store(adapter, root, manifest, identity_workers, identity_provider,
+                    storage_roots):
+    """Evaluate the store; an eligible match whose canonical profile differs is kept full."""
+    decision = adapter.evaluate(root, manifest,
+                                identity_workers=identity_workers,
+                                identity_provider=identity_provider,
+                                storage_roots=storage_roots)
+    if not decision.eligible:
+        return decision
+    matched_input = decision.matched_inputs[0]
+    canonical_profile = (matched_input.plate_source.interchange_profile
+                         if matched_input.plate_source
+                         else matched_input.source.interchange_profile)
+    if canonical_profile != adapter.profile:
+        logger.warning(f"Keeping {root} full: canonical profile {canonical_profile} "
+                       f"differs from {adapter.profile}")
+        return replace(decision, outcome=OUTCOME_KEEP_FULL,
+                       reason="unsupported-canonical-profile")
+    return decision
+
+
+def _manifest_with_refreshed_inputs(manifest, refreshed_inputs):
+    """Return the manifest with each input replaced by its refreshed copy, if any."""
+    # Reversed so the first refreshed copy of an ordinal wins.
+    refreshed_by_ordinal = {item.ordinal: item for item in reversed(refreshed_inputs)}
+    return manifest.model_copy(update={"inputs": tuple(
+        refreshed_by_ordinal.get(item.ordinal, item) for item in manifest.inputs)})
+
+
+def _operation_report(root, manifest, decision, adapter, image, task_id,
+                      started, evaluated, shallow_manifest=None, reason=None):
+    """Build the operation report; ``shallow_manifest`` marks a normalized result."""
+    return ShallowOperationReport(
+        schema=REPORT_SCHEMA, toolVersion=__version__, image=image,
+        inputContract=INPUT_CONTRACT, outputContract=OUTPUT_CONTRACT,
+        adapter=adapter.profile,
+        canonicalInputs=manifest, artifact=root.name,
+        refreshedInputs=(_manifest_with_refreshed_inputs(manifest, decision.refreshed_inputs)
+                         if decision.refreshed_inputs else None),
+        decision=decision.outcome, reason=reason or decision.reason,
+        result=RESULT_NORMALIZED if shallow_manifest else RESULT_KEPT_FULL,
+        manifest=shallow_manifest,
+        timings={"identity": evaluated - started,
+                 "normalization": time.monotonic() - evaluated},
+        slurmJobId=os.getenv("SLURM_JOB_ID"), taskId=task_id,
+    )
+
+
+def _normalize_eligible(root, manifest, decision, adapter, report_for, *,
+                        image, measure_bytes):
+    """Prune an eligible store; fall back to keep-full if that fails and recovers.
+
+    The trusted report is written and validated just before the prune commits.
+    """
+    report = report_for()
+
+    def commit(shallow_manifest):
+        nonlocal report
+        report = report_for(shallow_manifest)
+        write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
+        validate_report(root, manifest, image=image, tool_version=__version__)
+
+    try:
+        normalized = adapter.normalize(
+            decision, manifest.workflow_id,
+            before_commit=commit, measure_bytes=measure_bytes)
+        if measure_bytes:
+            report = report.model_copy(update={
+                "bytes_before": normalized.bytes_before,
+                "bytes_after": normalized.bytes_after,
+            })
+            write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
+    except Exception as exc:
+        # Recovery must succeed before a full-result fallback is safe.
+        logger.warning(f"Normalization of {root} failed: {exc}", exc_info=True)
+        recover(root)
+        if (root / SHALLOW_OPERATION_REPORT).exists():
+            logger.info(f"Normalization of {root} had committed before the failure")
+            return validate_report(root, manifest, image=image, tool_version=__version__)
+        logger.warning(f"Keeping {root} full: {NORMALIZATION_FAILED}")
+        report = report_for(reason=f"{NORMALIZATION_FAILED}: {exc}")
+    return report

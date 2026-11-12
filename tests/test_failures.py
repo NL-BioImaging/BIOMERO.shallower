@@ -7,8 +7,12 @@ import pytest
 
 from test_result_zarr import _make_image, _manifest, _input, _identity, IdentityProvider
 from biomero_shallower.cli import load_manifest
+from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST
 from biomero_shallower.operations import normalize
-from biomero_shallower.transaction import recover, remove_rollback
+from biomero_shallower.result_zarr import is_failure_reason
+from biomero_shallower.transaction import (
+    pending_prune_journals, prune_committed, recover, remove_rollback,
+)
 
 
 def snapshot(root):
@@ -122,6 +126,41 @@ def test_interrupted_uncommitted_recovery_restores_arrays_on_rerun(tmp_path):
     recover(root)
     assert (root / '0' / 'chunk').read_bytes() == b'x'
     assert not rollback.exists()
+
+
+@pytest.mark.parametrize('journal_committed, manifest, expected', [
+    (False, True, False),
+    (True, True, True),
+    (None, True, True),
+    (None, False, False),
+])
+def test_prune_committed_from_journal_and_manifest(tmp_path, journal_committed, manifest, expected):
+    root = tmp_path / 'result.zarr'
+    root.mkdir()
+    if manifest:
+        (root / SHALLOW_COLLECTION_MANIFEST).write_text('{}')
+    if journal_committed is not None:
+        rollback = tmp_path / '.result.zarr.biomero-prune-test'
+        rollback.mkdir()
+        (rollback / 'journal.json').write_text(json.dumps(
+            {'schema': 1, 'committed': journal_committed, 'moves': [], 'attrs': {}}))
+        assert pending_prune_journals(root) == [
+            {'schema': 1, 'committed': journal_committed, 'moves': [], 'attrs': {}}]
+    else:
+        assert pending_prune_journals(root) == []
+    assert prune_committed(root) is expected
+
+
+@pytest.mark.parametrize('reason, failure', [
+    ('normalization-failed: boom', True),
+    ('unsupported-ngff: mixed', True),
+    ('identity-unavailable: boom', True),
+    ('label-identity-unavailable: boom', True),
+    ('pixels-changed', False),
+    ('no-input-identity-match', False),
+])
+def test_is_failure_reason(reason, failure):
+    assert is_failure_reason(reason) is failure
 
 
 def test_production_does_not_measure_recursive_bytes(tmp_path):
