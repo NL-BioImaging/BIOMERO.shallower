@@ -1,4 +1,18 @@
-from importlib.metadata import version
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from importlib.metadata import PackageNotFoundError, version
 import subprocess
 import sys
 
@@ -9,6 +23,7 @@ from biomero_shallower.capabilities import (
     MIGRATIONS,
     capabilities,
     helper_image,
+    helper_image_repository,
     require_migrations,
 )
 
@@ -73,7 +88,7 @@ def test_container_labels_match_python_capabilities():
     ("0.1.0a2", "0.1.0-alpha.2"),
 ])
 def test_helper_image_maps_pep440_to_published_tag(version, tag):
-    assert helper_image(version) == f"cellularimagingcf/biomero-shallower:{tag}"
+    assert helper_image(version, repository="site/helper") == f"site/helper:{tag}"
 
 
 @pytest.mark.parametrize("version", ["0.0.dev0", "0.1.0b9.dev3+g1234", "0.1.0.post1"])
@@ -84,7 +99,22 @@ def test_helper_image_rejects_unpublished_versions(version):
 
 def test_helper_image_defaults_to_the_installed_release_version(monkeypatch):
     monkeypatch.setattr("biomero_shallower.capabilities.__version__", "0.1.0b9")
-    assert helper_image() == "cellularimagingcf/biomero-shallower:0.1.0-beta.9"
+    monkeypatch.setenv("BIOMERO_SHALLOWER_IMAGE_REPOSITORY", "site/helper")
+    assert helper_image() == "site/helper:0.1.0-beta.9"
+
+
+def test_helper_image_repository_comes_from_the_package_metadata(monkeypatch):
+    monkeypatch.delenv("BIOMERO_SHALLOWER_IMAGE_REPOSITORY", raising=False)
+    try:
+        version("biomero-shallower")
+    except PackageNotFoundError:
+        pytest.skip("the package is not installed")
+    assert helper_image_repository() == "cellularimagingcf/biomero-shallower"
+
+
+def test_helper_image_repository_environment_override(monkeypatch):
+    monkeypatch.setenv("BIOMERO_SHALLOWER_IMAGE_REPOSITORY", "site/helper")
+    assert helper_image_repository() == "site/helper"
 
 
 def test_helper_image_defaults_to_the_installed_version_and_rejects_a_dev_build(monkeypatch):

@@ -15,6 +15,8 @@ dependencies = ["biomero-schema>=0.3.0b3,<0.4", "numpy>=1.26.4,<3", "rocrate==0.
 [project.urls]
 Repository = "https://github.com/NL-BioImaging/BIOMERO.shallower"
 Documentation = "https://nl-bioimaging.github.io/BIOMERO.shallower/"
+# The helper image repository, read at runtime (package metadata) and by the release workflow.
+"Helper image" = "https://hub.docker.com/r/cellularimagingcf/biomero-shallower"
 
 [project.optional-dependencies]
 identity = ["iscc-bio[ome-zarr]==0.2.0"]

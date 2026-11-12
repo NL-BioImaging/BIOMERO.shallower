@@ -1,4 +1,19 @@
-"""Rebuild a conventional image or Plate Zarr from a shallow reference.
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Rebuild a conventional image or Plate Zarr from a shallow reference.
 
 The managed canonical pixels and the managed labels are copied into a sibling
 staging directory, which is renamed into place only after its label inventory
@@ -10,6 +25,7 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path, PurePosixPath
 import shutil
+from typing import Callable, Iterator
 from uuid import uuid4
 
 from biomero_schema.zarr import (
@@ -38,7 +54,16 @@ CANONICAL_MARKER_NAME = ".biomero-canonical.json"
 
 @dataclass(frozen=True)
 class MaterializedShallowResult:
-    """A full temporary workflow input reconstructed from managed components."""
+    """
+    A full temporary workflow input reconstructed from managed components.
+
+    Attributes:
+        destination (Path): The materialized conventional Zarr.
+        manifest (ShallowManifest): The shallow collection manifest it was
+            built from.
+        labels (tuple[ZarrLabelComponent, ...]): The copied labels, each with
+            its stable managed source.
+    """
 
     destination: Path
     manifest: ShallowManifest
@@ -50,10 +75,11 @@ def materialize_shallow_zarr(
     destination: str | Path,
     storage_roots: dict[str, Path],
     *,
-    move=None,
-    replace=None,
+    move: Callable[[Path, Path], object] | None = None,
+    replace: Callable[[Path, Path], object] | None = None,
 ) -> MaterializedShallowResult:
-    """Build a conventional image or Plate Zarr from a shallow reference.
+    """
+    Build a conventional image or Plate Zarr from a shallow reference.
 
     The managed source and collections are read-only. The destination is
     assembled as a sibling staging directory and atomically renamed only after
@@ -62,6 +88,28 @@ def materialize_shallow_zarr(
     ``move`` renames the staging directory into place (default ``os.replace``;
     tests inject failures). ``replace`` is the deprecated former name
     of ``move``, still accepted for existing callers.
+
+    Args:
+        reference (ShallowZarrReference | ShallowPlateReference): The shallow
+            reference to materialize.
+        destination (str | Path): Where the conventional Zarr is created. It
+            must not exist yet.
+        storage_roots (dict[str, Path]): The managed storage roots by name.
+        move (Callable[[Path, Path], object] | None, optional): Renames the
+            staging directory into place. Defaults to ``os.replace``.
+        replace (Callable[[Path, Path], object] | None, optional): Deprecated
+            former name of ``move``.
+
+    Returns:
+        MaterializedShallowResult:
+            The destination, the manifest and the copied labels.
+
+    Raises:
+        PixelIdentityError: If the destination exists, the reference no longer
+            matches its collection manifest, a source or label is unavailable
+            or the label inventory differs from the collection.
+        ValueError: If both ``move`` and ``replace`` are given, or a managed
+            source cannot be resolved.
     """
     move = resolve_move(move, replace)
     destination = Path(destination)
@@ -79,8 +127,17 @@ def materialize_shallow_zarr(
 
 
 @contextmanager
-def _staging_directory(destination: Path):
-    """Yield a sibling staging path and delete whatever is left of it afterwards."""
+def _staging_directory(destination: Path) -> Iterator[Path]:
+    """
+    Yield a sibling staging path and delete whatever is left of it afterwards.
+
+    Args:
+        destination (Path): The final destination the staging path sits beside.
+
+    Yields:
+        Path:
+            The staging path, which does not exist yet.
+    """
     staging = destination.with_name(
         f".{destination.name}.biomero-materialize-{uuid4().hex}"
     )
@@ -92,13 +149,22 @@ def _staging_directory(destination: Path):
             shutil.rmtree(staging, ignore_errors=True)
 
 
-def _skip_labels(image_directories: set[Path]):
-    """Return a ``shutil.copytree`` ignore function that drops markers and image labels.
+def _skip_labels(image_directories: set[Path]) -> Callable[[str, list[str]], set[str]]:
+    """
+    Return a ``shutil.copytree`` ignore function that drops markers and image labels.
 
     Labels are copied separately from their managed sources, so the canonical
     image's own ``labels`` folder must not come along.
+
+    Args:
+        image_directories (set[Path]): The canonical image directories whose
+            ``labels`` folder must not be copied.
+
+    Returns:
+        Callable[[str, list[str]], set[str]]:
+            The ``ignore`` callable for ``shutil.copytree``.
     """
-    def ignore(directory, names):
+    def ignore(directory: str, names: list[str]) -> set[str]:
         """Names ``shutil.copytree`` must skip in ``directory``."""
         ignored = {CANONICAL_MARKER_NAME}.intersection(names)
         if Path(directory) in image_directories and LABELS_GROUP_NAME in names:
@@ -107,13 +173,39 @@ def _skip_labels(image_directories: set[Path]):
     return ignore
 
 
-def _copy_label(component, reference, collection_root, storage_roots, staging,
-                target_node, unavailable_message):
-    """Copy one label tree into the staged store; return its managed source.
+def _copy_label(
+    component: ZarrLabelComponent,
+    reference: ShallowZarrReference | ShallowPlateReference,
+    collection_root: Path,
+    storage_roots: dict[str, Path],
+    staging: Path,
+    target_node: str,
+    unavailable_message: str,
+) -> ManagedZarrNode:
+    """
+    Copy one label tree into the staged store; return its managed source.
 
     A label without its own source lives in this collection; an inherited one
     lives in the canonical store it names. ``unavailable_message`` is raised,
     with the missing path, when that label tree does not exist.
+
+    Args:
+        component (ZarrLabelComponent): The label to copy.
+        reference (ShallowZarrReference | ShallowPlateReference): The shallow
+            reference, which locates the collection.
+        collection_root (Path): The folder holding the collection manifest.
+        storage_roots (dict[str, Path]): The managed storage roots by name.
+        staging (Path): The staged store to copy into.
+        target_node (str): The node path of the label in the staged store.
+        unavailable_message (str): The error message when the label tree does
+            not exist.
+
+    Returns:
+        ManagedZarrNode:
+            The stable managed source the label was copied from.
+
+    Raises:
+        PixelIdentityError: If the label tree does not exist.
     """
     if component.source is None:
         managed_source = ManagedZarrNode(
@@ -132,8 +224,20 @@ def _copy_label(component, reference, collection_root, storage_roots, staging,
     return managed_source
 
 
-def _require_label_inventory(staging, expected_paths, mismatch_message):
-    """Check the staged store holds exactly the labels the collection declares."""
+def _require_label_inventory(
+    staging: Path, expected_paths: set[str], mismatch_message: str
+) -> None:
+    """
+    Check the staged store holds exactly the labels the collection declares.
+
+    Args:
+        staging (Path): The staged store.
+        expected_paths (set[str]): The label node paths the collection declares.
+        mismatch_message (str): The error message when the inventory differs.
+
+    Raises:
+        PixelIdentityError: If the staged labels differ from ``expected_paths``.
+    """
     discovered_paths = {
         node.node_path for node in discover_ngff_nodes(staging)
         if node.role == "label"
@@ -142,9 +246,35 @@ def _require_label_inventory(staging, expected_paths, mismatch_message):
         raise PixelIdentityError(mismatch_message)
 
 
-def _materialize_image(reference, destination, storage_roots, move,
-                       collection_root, manifest):
-    """Copy one canonical image and its labels into a conventional Zarr."""
+def _materialize_image(
+    reference: ShallowZarrReference,
+    destination: Path,
+    storage_roots: dict[str, Path],
+    move: Callable[[Path, Path], object],
+    collection_root: Path,
+    manifest: ShallowManifest,
+) -> MaterializedShallowResult:
+    """
+    Copy one canonical image and its labels into a conventional Zarr.
+
+    Args:
+        reference (ShallowZarrReference): The shallow image reference.
+        destination (Path): Where the conventional Zarr is created.
+        storage_roots (dict[str, Path]): The managed storage roots by name.
+        move (Callable[[Path, Path], object]): Renames the staging directory
+            into place.
+        collection_root (Path): The folder holding the collection manifest.
+        manifest (ShallowManifest): The collection manifest.
+
+    Returns:
+        MaterializedShallowResult:
+            The destination, the manifest and the copied labels.
+
+    Raises:
+        PixelIdentityError: If the reference does not identify one collection
+            image, no longer matches the manifest, a source is unavailable, a
+            label path is not below its image or the label inventory differs.
+    """
     logger.info(f"Materializing image {reference.image_node_path} "
                 f"from {collection_root} to {destination}")
     matches = [
@@ -221,9 +351,36 @@ def _materialize_image(reference, destination, storage_roots, move,
     )
 
 
-def _materialize_plate(reference, destination, storage_roots, move,
-                       collection_root, manifest):
-    """Copy a canonical Plate and every field's labels into a conventional Zarr."""
+def _materialize_plate(
+    reference: ShallowPlateReference,
+    destination: Path,
+    storage_roots: dict[str, Path],
+    move: Callable[[Path, Path], object],
+    collection_root: Path,
+    manifest: ShallowManifest,
+) -> MaterializedShallowResult:
+    """
+    Copy a canonical Plate and every field's labels into a conventional Zarr.
+
+    Args:
+        reference (ShallowPlateReference): The shallow Plate reference.
+        destination (Path): Where the conventional Zarr is created.
+        storage_roots (dict[str, Path]): The managed storage roots by name.
+        move (Callable[[Path, Path], object]): Renames the staging directory
+            into place.
+        collection_root (Path): The folder holding the collection manifest.
+        manifest (ShallowManifest): The collection manifest.
+
+    Returns:
+        MaterializedShallowResult:
+            The destination, the manifest and the copied labels.
+
+    Raises:
+        PixelIdentityError: If the collection has inconsistent canonical
+            sources, the reference no longer matches the manifest, a source or
+            label is unavailable, a label path is not below its image or the
+            label inventory differs.
+    """
     logger.info(f"Materializing Plate from {collection_root} to {destination}")
     try:
         expected_reference = ShallowPlateReference.from_manifest(
@@ -296,8 +453,24 @@ def _materialize_plate(reference, destination, storage_roots, move,
     )
 
 
-def _plate_label_name(component, labels_prefix: PurePosixPath) -> PurePosixPath:
-    """Return a Plate label's single name below its image's labels/ group, or raise."""
+def _plate_label_name(
+    component: ZarrLabelComponent, labels_prefix: PurePosixPath
+) -> PurePosixPath:
+    """
+    Return a Plate label's single name below its image's labels/ group, or raise.
+
+    Args:
+        component (ZarrLabelComponent): The label component.
+        labels_prefix (PurePosixPath): The image's ``labels`` group path.
+
+    Returns:
+        PurePosixPath:
+            The label's name relative to ``labels_prefix``.
+
+    Raises:
+        PixelIdentityError: If the label is not nested directly below the
+            image's labels group.
+    """
     logical = PurePosixPath(component.logical_node_path)
     try:
         relative = logical.relative_to(labels_prefix)

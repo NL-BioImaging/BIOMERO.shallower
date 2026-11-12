@@ -18,9 +18,11 @@ access to existing organization secrets:
 | `PYPI_API_TOKEN` | PyPI API token permitted to publish the `biomero-shallower` project. |
 
 Ensure `cellularimagingcf/biomero-shallower` is public so clusters can acquire
-the image without registry credentials. For a different registry namespace,
-adapt the workflow image reference and the corresponding deployment setting
-together. Tokens are used only in publishing jobs, never in pull-request builds
+the image without registry credentials. The repository is declared once, as
+the "Helper image" project URL in `pyproject.toml`: the release workflow and
+`helper_image()` both read it. For a different registry namespace, change that
+entry, or set `BIOMERO_SHALLOWER_IMAGE_REPOSITORY` (or pass `repository=`)
+where the image is looked up, together with the corresponding deployment setting. Tokens are used only in publishing jobs, never in pull-request builds
 or container build arguments.
 
 For documentation, select **Settings → Pages → Source → GitHub Actions**.

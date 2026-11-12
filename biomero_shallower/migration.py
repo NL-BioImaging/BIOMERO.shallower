@@ -1,3 +1,17 @@
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Explicit one-time migration of prerelease shallow stores to schema 2."""
 
 from dataclasses import dataclass
@@ -5,7 +19,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -39,6 +53,8 @@ from .filesystem import write_json
 
 
 class _LegacyModel(BaseModel):
+    """Frozen, strict base of the schema-1 models, keyed by their JSON aliases."""
+
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
@@ -46,11 +62,30 @@ class _LegacyModel(BaseModel):
         validate_by_alias=True,
     )
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Serialize to a JSON-compatible dict using the aliases.
+
+        Returns:
+            dict[str, Any]:
+                The model as JSON-compatible data.
+        """
         return self.model_dump(by_alias=True, mode="json")
 
 
 class _LegacyImageReference(_LegacyModel):
+    """
+    One image entry of a schema-1 shallow collection.
+
+    Attributes:
+        image_node_path (str): The image node path.
+        source (CanonicalZarrSource): The canonical source of the image.
+        returned_pixel_identity (PixelIdentity): The identity of the returned image.
+        label_node_paths (tuple[str, ...]): The retained label node paths.
+        label_components (tuple[ZarrLabelComponent, ...]): The label bindings;
+            may be empty in early schema-1 writers.
+    """
+
     image_node_path: str = Field(alias="imageNodePath")
     source: CanonicalZarrSource
     returned_pixel_identity: PixelIdentity = Field(alias="returnedPixelIdentity")
@@ -61,7 +96,17 @@ class _LegacyImageReference(_LegacyModel):
     )
 
     @model_validator(mode="after")
-    def validate_labels(self):
+    def validate_labels(self) -> "_LegacyImageReference":
+        """
+        Require one label component per label node path when components exist.
+
+        Returns:
+            _LegacyImageReference:
+                The validated model.
+
+        Raises:
+            ValueError: If the component paths differ from ``label_node_paths``.
+        """
         component_paths = tuple(
             component.logical_node_path for component in self.label_components
         )
@@ -76,6 +121,18 @@ class _LegacyImageReference(_LegacyModel):
 
 
 class _LegacyShallowCollection(_LegacyModel):
+    """
+    The schema-1 shallow collection document.
+
+    Attributes:
+        workflow_id (UUID): The workflow the store belongs to.
+        transfer_artifact (str): The transfer artifact name.
+        images (tuple[_LegacyImageReference, ...]): The image entries.
+        interchange_profile (str): The interchange profile.
+        model (Literal["rfc8-shallow-copy"]): The shallow model name.
+        schema_version (Literal[1]): The schema version.
+    """
+
     workflow_id: UUID = Field(alias="workflowId")
     transfer_artifact: str = Field(alias="transferArtifact")
     images: tuple[_LegacyImageReference, ...] = Field(min_length=1)
@@ -86,14 +143,30 @@ class _LegacyShallowCollection(_LegacyModel):
 
 @dataclass(frozen=True)
 class ShallowMigrationResult:
-    """Completed filesystem migration and its retained rollback copy."""
+    """
+    Completed filesystem migration and its retained rollback copy.
+
+    Attributes:
+        store_path (Path): The migrated store.
+        backup_path (Path): The rollback copy of the replaced metadata.
+        manifest (ShallowManifest): The new manifest.
+        report_sha256 (str | None): The checksum of the new operation report, or
+            None if the store has no report.
+    """
 
     store_path: Path
     backup_path: Path
     manifest: ShallowManifest
     report_sha256: str | None
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Serialize the result for the CLI.
+
+        Returns:
+            dict[str, Any]:
+                The migration result document.
+        """
         return {
             "schema": 1,
             "result": "migrated",
@@ -105,8 +178,20 @@ class ShallowMigrationResult:
         }
 
 
-def _replace_canonical_locators(value, replacements):
-    """Replace managed canonical paths in a JSON-compatible contract tree."""
+def _replace_canonical_locators(value: Any, replacements: dict[tuple[str, str], str]) -> Any:
+    """
+    Replace managed canonical paths in a JSON-compatible contract tree.
+
+    Args:
+        value (Any): A JSON-compatible value (dict, list or scalar).
+        replacements (dict[tuple[str, str], str]): New relative paths keyed by
+            (storage root, old relative path).
+
+    Returns:
+        Any:
+            The tree with matching locators replaced (and their
+            ``sourceGeneration`` reset to 1).
+    """
     if isinstance(value, dict):
         updated = {
             key: _replace_canonical_locators(item, replacements)
@@ -129,11 +214,28 @@ def rebind_shallow_store_sources(
     *,
     backup_path: str | Path,
 ) -> ShallowMigrationResult:
-    """Point one settled shallow store at stable canonical locations.
+    """
+    Point one settled shallow store at stable canonical locations.
 
     Only versioned metadata is rewritten. Pixel chunks in the shallow result
     are untouched. The manifest and operation report are validated together,
     and both are restored if either write fails.
+
+    Args:
+        store_path (str | Path): The shallow store directory.
+        replacements (dict[tuple[str, str], str]): New relative paths keyed by
+            (storage root, old relative path).
+        backup_path (str | Path): Where to keep the rollback copy; must not exist
+            and must be outside the store.
+
+    Returns:
+        ShallowMigrationResult:
+            The migration result.
+
+    Raises:
+        ValueError: If the store is not a real directory, the replacements are
+            missing, empty or match nothing, the report and manifest would
+            diverge, or the backup location is invalid.
     """
     root = Path(store_path).resolve()
     if not root.is_dir() or root.is_symlink():
@@ -208,7 +310,21 @@ def rebind_shallow_store_sources(
     )
 
 
-def _reconstruct_label_components(root, image, identity_provider):
+def _reconstruct_label_components(
+    root: Path, image: _LegacyImageReference, identity_provider: Any
+) -> tuple[ZarrLabelComponent, ...]:
+    """
+    Rebuild the label bindings of a path-only schema-1 image from its stored labels.
+
+    Args:
+        root (Path): The store directory.
+        image (_LegacyImageReference): The legacy image entry.
+        identity_provider (Any): Provider whose ``generate`` hashes a label node.
+
+    Returns:
+        tuple[ZarrLabelComponent, ...]:
+            One component per label node path.
+    """
     components = []
     for node_path in image.label_node_paths:
         guard = read_zarr_v2_semantic_guard(root, node_path)
@@ -232,13 +348,29 @@ def upgrade_manifest_v1(
     value: dict,
     *,
     store_path: str | Path | None = None,
-    identity_provider=None,
+    identity_provider: Any = None,
 ) -> ShallowManifest:
-    """Convert a validated prerelease schema-1 manifest in memory.
+    """
+    Convert a validated prerelease schema-1 manifest in memory.
 
     Early schema-1 writers recorded only ``labelNodePaths``. Those labels were
     retained in the shallow store, so migration reconstructs their missing
     identity bindings from the physical nodes when ``store_path`` is supplied.
+
+    Args:
+        value (dict): The schema-1 manifest as JSON data.
+        store_path (str | Path, optional): The store holding the label nodes;
+            required when labels are path-only.
+        identity_provider (Any, optional): Provider used to hash reconstructed
+            labels; defaults to an ``IsccBioIdentityProvider``.
+
+    Returns:
+        ShallowManifest:
+            The schema-2 manifest.
+
+    Raises:
+        ValueError: If the manifest is invalid, or has path-only labels and no
+            ``store_path``.
     """
     legacy = _LegacyShallowCollection.model_validate(value)
     missing_components = any(
@@ -313,7 +445,21 @@ def upgrade_annotation_reference_v1(
     values: dict[str, str],
     manifest: ShallowManifest,
 ) -> dict[str, str]:
-    """Upgrade one validated schema-1 OMERO shallow-reference projection."""
+    """
+    Upgrade one validated schema-1 OMERO shallow-reference projection.
+
+    Args:
+        values (dict[str, str]): The schema-1 annotation values.
+        manifest (ShallowManifest): The upgraded store manifest they must match.
+
+    Returns:
+        dict[str, str]:
+            The schema-2 annotation values.
+
+    Raises:
+        ValueError: If the values are not a schema-1 shallow reference, are of
+            an unknown kind, or do not match the store manifest.
+    """
     if values.get("schema") != "1" or values.get("model") != "rfc8-shallow-copy":
         raise ValueError("Expected a schema-1 shallow OMERO reference")
     expected = {
@@ -365,7 +511,23 @@ def _upgrade_report_v1(
     value: dict,
     manifest: ShallowManifest,
     legacy_manifest: dict,
-):
+) -> ShallowOperationReport:
+    """
+    Convert a schema-1 operation report, checking it against the legacy manifest.
+
+    Args:
+        value (dict): The schema-1 report as JSON data.
+        manifest (ShallowManifest): The upgraded manifest to embed.
+        legacy_manifest (dict): The schema-1 sidecar manifest as JSON data.
+
+    Returns:
+        ShallowOperationReport:
+            The schema-2 report.
+
+    Raises:
+        ValueError: If the report is not schema 1 or its collection differs
+            from the sidecar manifest.
+    """
     if value.get("schema") != 1 or value.get("outputContract") != 1:
         raise ValueError("Expected a schema-1 shallow operation report")
     legacy_collection = _LegacyShallowCollection.model_validate(
@@ -391,13 +553,30 @@ def migrate_shallow_store_v1(
     store_path: str | Path,
     *,
     backup_path: str | Path | None = None,
-    identity_provider=None,
+    identity_provider: Any = None,
 ) -> ShallowMigrationResult:
-    """Upgrade one settled schema-1 shallow store and retain rollback files.
+    """
+    Upgrade one settled schema-1 shallow store and retain rollback files.
 
     This command is for prerelease data that is no longer part of an active
     transfer or import. Rewriting the operation report changes its checksum;
     any in-flight remote receipt therefore becomes invalid.
+
+    Args:
+        store_path (str | Path): The shallow store directory.
+        backup_path (str | Path, optional): Where to keep the rollback copy;
+            defaults to a hidden sibling of the store.
+        identity_provider (Any, optional): Provider used to hash reconstructed
+            labels.
+
+    Returns:
+        ShallowMigrationResult:
+            The migration result.
+
+    Raises:
+        ValueError: If the store is not a real directory, its BIOMERO shallow
+            metadata is missing or not schema 1, or the backup location is
+            invalid.
     """
     root = Path(store_path).resolve()
     if not root.is_dir() or root.is_symlink():
@@ -488,7 +667,18 @@ def restore_shallow_store_v1(
     store_path: str | Path,
     backup_path: str | Path,
 ) -> None:
-    """Restore schema-1 metadata after a coordinated migration failure."""
+    """
+    Restore schema-1 metadata after a coordinated migration failure.
+
+    Args:
+        store_path (str | Path): The shallow store directory.
+        backup_path (str | Path): The rollback copy made by the migration.
+
+    Raises:
+        ValueError: If the store or backup is not a real directory, the backup
+            is inside the store, does not match the current store, or is
+            incomplete.
+    """
     root = Path(store_path).resolve()
     backup = Path(backup_path).resolve()
     if not root.is_dir() or root.is_symlink():

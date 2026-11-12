@@ -92,12 +92,22 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Read the helper image repository declared in pyproject.toml
+        if: github.event_name == 'release'
+        id: image
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as stream:
+              url = tomllib.load(stream)["project"]["urls"]["Helper image"]
+          print("repository=" + url.removeprefix("https://hub.docker.com/r/"))
+          PY
       - name: Image tags and labels
         if: github.event_name == 'release'
         id: metadata
         uses: docker/metadata-action@v5
         with:
-          images: cellularimagingcf/biomero-shallower
+          images: ${{ steps.image.outputs.repository }}
           flavor: latest=false
           tags: |
             type=semver,pattern={{version}}

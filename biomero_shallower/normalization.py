@@ -1,4 +1,19 @@
-"""Transactional pruning: move verified duplicate arrays out of a returned store.
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Transactional pruning: move verified duplicate arrays out of a returned store.
 
 `normalize_returned_zarr` plans the prune (nothing is touched), journals the
 intent, moves the arrays into a sibling rollback folder, rewrites the image
@@ -6,10 +21,12 @@ metadata, validates the staged store, commits the journal and only then
 deletes the rollback folder. A failure before the commit rolls everything back.
 """
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path, PurePosixPath
+from typing import Any
 from uuid import UUID, uuid4
 
 from biomero_schema.zarr import (
@@ -33,7 +50,7 @@ from .ngff import (
 )
 from .output_declarations import references_omitted_files
 from .transaction import (
-    begin, commit, recover, remove_rollback, rollback_path,
+    PruneJournal, begin, commit, recover, remove_rollback, rollback_path,
 )
 
 __all__ = ["NormalizedShallowResult", "PrunePlan", "normalize_returned_zarr"]
@@ -43,7 +60,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class NormalizedShallowResult:
-    """Committed shallow collection and optional storage measurements."""
+    """
+    Committed shallow collection and optional storage measurements.
+
+    Attributes:
+        store_path (Path): The pruned store root.
+        manifest (ShallowManifest): The committed shallow manifest.
+        bytes_before (int | None): Store size before pruning, if measured.
+        bytes_after (int | None): Store size after pruning, if measured.
+    """
 
     store_path: Path
     manifest: ShallowManifest
@@ -53,7 +78,24 @@ class NormalizedShallowResult:
 
 @dataclass(frozen=True)
 class PrunePlan:
-    """Everything a prune does, decided before any file is touched."""
+    """
+    Everything a prune does, decided before any file is touched.
+
+    Attributes:
+        root (Path): The store root.
+        rollback (Path): The sibling rollback folder the arrays move into.
+        manifest (ShallowManifest): The shallow manifest to commit.
+        image_nodes (tuple[NgffNode, ...]): The discovered image nodes.
+        label_nodes (tuple[NgffNode, ...]): The discovered label nodes.
+        omitted_directories (frozenset[Path]): Every image dataset and
+            inherited label directory that must be gone afterwards.
+        moved_directories (tuple[Path, ...]): The subset that is actually
+            moved: directories nested in another are dropped.
+        inherited_label_paths (frozenset[str]): Node paths of the labels
+            inherited from the canonical input.
+        original_attrs (dict[Path, bytes]): Original image-node attribute files
+            and their bytes, restored on rollback.
+    """
 
     root: Path
     rollback: Path
@@ -73,12 +115,13 @@ def normalize_returned_zarr(
     decision: ReturnedZarrDecision,
     workflow_id: UUID | str,
     *,
-    move=None,
-    replace=None,
+    move: Callable[..., Any] | None = None,
+    replace: Callable[..., Any] | None = None,
     measure_bytes: bool = False,
-    before_commit=None,
+    before_commit: Callable[[ShallowManifest], Any] | None = None,
 ) -> NormalizedShallowResult:
-    """Transactionally omit verified duplicate arrays from a result store.
+    """
+    Transactionally omit verified duplicate arrays from a result store.
 
     Duplicate image arrays are atomically moved into a sibling rollback
     journal.  Labels and metadata stay in place, avoiding a costly copy of the
@@ -95,6 +138,26 @@ def normalize_returned_zarr(
     ``move`` renames one directory (default ``os.replace``; tests inject
     failures). ``replace`` is the deprecated former name of ``move``, still
     accepted for existing callers.
+
+    Args:
+        decision (ReturnedZarrDecision): The eligible decision for the returned
+            store.
+        workflow_id (UUID | str): The workflow the store belongs to.
+        move (Callable, optional): Renames one directory.
+        replace (Callable, optional): Deprecated former name of ``move``.
+        measure_bytes (bool, optional): Measure the store size before and after.
+        before_commit (Callable, optional): Called with the manifest after
+            validation and before the commit; may raise to abort the prune.
+
+    Returns:
+        NormalizedShallowResult:
+            The committed shallow collection and optional measurements.
+
+    Raises:
+        PixelIdentityError: If the decision no longer matches the store.
+        TypeError: If both ``move`` and ``replace`` are passed.
+        Exception: Any pre-commit failure is re-raised after the prune is
+            rolled back.
     """
     move = resolve_move(move, replace)
     plan = _plan_prune(decision, workflow_id)
@@ -122,8 +185,23 @@ def normalize_returned_zarr(
     )
 
 
-def _plan_prune(decision, workflow_id):
-    """Check the decision against the store and plan the prune without touching it."""
+def _plan_prune(decision: ReturnedZarrDecision, workflow_id: UUID | str) -> PrunePlan:
+    """
+    Check the decision against the store and plan the prune without touching it.
+
+    Args:
+        decision (ReturnedZarrDecision): The decision for the returned store.
+        workflow_id (UUID | str): The workflow the store belongs to.
+
+    Returns:
+        PrunePlan:
+            The complete plan of the prune.
+
+    Raises:
+        PixelIdentityError: If the decision is not eligible or no longer
+            describes the store, the store was already shallowed, or an RO-Crate
+            inventories the omitted arrays.
+    """
     root = _require_prunable_store(decision)
     nodes = discover_ngff_nodes(root)
     image_nodes = tuple(node for node in nodes if node.role == "image")
@@ -178,19 +256,48 @@ def _plan_prune(decision, workflow_id):
     )
 
 
-def _begin_prune(plan):
-    """Create the rollback folder and journal the intent; return the journal."""
+def _begin_prune(plan: PrunePlan) -> PruneJournal:
+    """
+    Create the rollback folder and journal the intent; return the journal.
+
+    Args:
+        plan (PrunePlan): The plan of the prune.
+
+    Returns:
+        PruneJournal:
+            The uncommitted journal.
+    """
     plan.rollback.mkdir()
     journal = begin(plan.root, plan.rollback, plan.moved_directories, plan.original_attrs)
     sync_directory(plan.root.parent)
     return journal
 
 
-def _execute_prune(plan, journal, *, move, measure_bytes, before_commit):
-    """Move the arrays out, rewrite metadata, validate, then commit the journal.
+def _execute_prune(
+    plan: PrunePlan,
+    journal: PruneJournal,
+    *,
+    move: Callable[..., Any],
+    measure_bytes: bool,
+    before_commit: Callable[[ShallowManifest], Any] | None,
+) -> int | None:
+    """
+    Move the arrays out, rewrite metadata, validate, then commit the journal.
 
-    Returns the store size after pruning (None unless ``measure_bytes``).
-    Raises on any failure before the commit; the caller rolls back.
+    Args:
+        plan (PrunePlan): The plan of the prune.
+        journal (PruneJournal): The uncommitted journal.
+        move (Callable): Renames one directory.
+        measure_bytes (bool): Whether to measure the store size afterwards.
+        before_commit (Callable | None): Called with the manifest before the
+            commit.
+
+    Returns:
+        int | None:
+            The store size after pruning (None unless ``measure_bytes``).
+
+    Raises:
+        Exception: On any failure before the commit; the caller rolls back.
     """
     _move_arrays_to_rollback(plan.root, plan.rollback, plan.moved_directories, move)
     _write_shallow_metadata(plan.root, plan.image_nodes, plan.manifest)
@@ -203,11 +310,15 @@ def _execute_prune(plan, journal, *, move, measure_bytes, before_commit):
     return bytes_after
 
 
-def _roll_back(root):
-    """Undo a failed prune; a failure to do so is logged and never masks the prune error.
+def _roll_back(root: Path) -> None:
+    """
+    Undo a failed prune; a failure to do so is logged and never masks the prune error.
 
     `recover` restores the arrays, then the saved attributes, then drops the
     shallow files. If it fails too, the next `normalize` or `recover` retries.
+
+    Args:
+        root (Path): The store root.
     """
     try:
         recover(root)
@@ -217,7 +328,20 @@ def _roll_back(root):
 
 
 def _require_prunable_store(decision: ReturnedZarrDecision) -> Path:
-    """Return the store of an eligible single-input decision, or raise."""
+    """
+    Return the store of an eligible single-input decision, or raise.
+
+    Args:
+        decision (ReturnedZarrDecision): The decision for the returned store.
+
+    Returns:
+        Path:
+            The store root.
+
+    Raises:
+        PixelIdentityError: If the decision is not eligible, does not have
+            exactly one matched input, or the store does not exist.
+    """
     if not decision.eligible or len(decision.matched_inputs) != 1:
         raise PixelIdentityError("Returned Zarr is not eligible for shallowing")
     root = decision.store_path
@@ -226,8 +350,26 @@ def _require_prunable_store(decision: ReturnedZarrDecision) -> Path:
     return root
 
 
-def _canonical_sources_of_match(root, matched_input, image_nodes):
-    """Return the canonical source of each image node and the shared profile."""
+def _canonical_sources_of_match(
+    root: Path, matched_input: Any, image_nodes: tuple[NgffNode, ...]
+) -> tuple[dict[str, Any], str]:
+    """
+    Return the canonical source of each image node and the shared profile.
+
+    Args:
+        root (Path): The store root.
+        matched_input (Any): The canonical input matched to the returned store.
+        image_nodes (tuple[NgffNode, ...]): The discovered image nodes.
+
+    Returns:
+        tuple[dict[str, Any], str]:
+            The canonical source per image node path, and the interchange
+            profile.
+
+    Raises:
+        PixelIdentityError: If the input has no canonical source, the profiles
+            differ or the sources do not cover every image node.
+    """
     if matched_input.plate_source is not None:
         input_sources = {
             image.image_node_path: image.source
@@ -248,8 +390,23 @@ def _canonical_sources_of_match(root, matched_input, image_nodes):
     return input_sources, interchange_profile
 
 
-def _label_components_by_image(decision, image_nodes):
-    """Group the decision's label components under their unique parent image."""
+def _label_components_by_image(
+    decision: ReturnedZarrDecision, image_nodes: tuple[NgffNode, ...]
+) -> dict[str, list[Any]]:
+    """
+    Group the decision's label components under their unique parent image.
+
+    Args:
+        decision (ReturnedZarrDecision): The decision for the returned store.
+        image_nodes (tuple[NgffNode, ...]): The discovered image nodes.
+
+    Returns:
+        dict[str, list[Any]]:
+            The label components per image node path.
+
+    Raises:
+        PixelIdentityError: If a label has no unique parent image.
+    """
     components_by_image = {node.node_path: [] for node in image_nodes}
     for component in decision.label_components:
         parents = [
@@ -266,8 +423,21 @@ def _label_components_by_image(decision, image_nodes):
     return components_by_image
 
 
-def _label_records(components_by_image, image_nodes):
-    """Number every label component as ``(label id, parent image path, component)``."""
+def _label_records(
+    components_by_image: dict[str, list[Any]], image_nodes: tuple[NgffNode, ...]
+) -> tuple[tuple[str, str, Any], ...]:
+    """
+    Number every label component as ``(label id, parent image path, component)``.
+
+    Args:
+        components_by_image (dict[str, list[Any]]): The label components per
+            image node path.
+        image_nodes (tuple[NgffNode, ...]): The discovered image nodes.
+
+    Returns:
+        tuple[tuple[str, str, Any], ...]:
+            The numbered label records.
+    """
     return tuple(
         (f"label-{index}", image_path, component)
         for index, (image_path, component) in enumerate(
@@ -278,9 +448,35 @@ def _label_records(components_by_image, image_nodes):
     )
 
 
-def _build_shallow_manifest(decision, workflow_id, root, image_nodes,
-                            input_sources, interchange_profile, returned_by_path):
-    """Describe the shallow collection: its graph nodes and their source bindings."""
+def _build_shallow_manifest(
+    decision: ReturnedZarrDecision,
+    workflow_id: UUID | str,
+    root: Path,
+    image_nodes: tuple[NgffNode, ...],
+    input_sources: dict[str, Any],
+    interchange_profile: str,
+    returned_by_path: dict[str, Any],
+) -> ShallowManifest:
+    """
+    Describe the shallow collection: its graph nodes and their source bindings.
+
+    Args:
+        decision (ReturnedZarrDecision): The decision for the returned store.
+        workflow_id (UUID | str): The workflow the store belongs to.
+        root (Path): The store root.
+        image_nodes (tuple[NgffNode, ...]): The discovered image nodes.
+        input_sources (dict[str, Any]): The canonical source per image node path.
+        interchange_profile (str): The shared interchange profile.
+        returned_by_path (dict[str, Any]): The returned pixel identity per
+            image node path.
+
+    Returns:
+        ShallowManifest:
+            The manifest of the shallow collection.
+
+    Raises:
+        PixelIdentityError: If a label has no unique parent image.
+    """
     components_by_image = _label_components_by_image(decision, image_nodes)
     image_graph_nodes = tuple(
         ShallowImageNode(
@@ -334,8 +530,24 @@ def _build_shallow_manifest(decision, workflow_id, root, image_nodes,
     )
 
 
-def _omitted_array_directories(root, image_nodes, inherited_label_paths):
-    """Return the image datasets and inherited label trees to move out of the store."""
+def _omitted_array_directories(
+    root: Path, image_nodes: tuple[NgffNode, ...], inherited_label_paths: frozenset[str]
+) -> set[Path]:
+    """
+    Return the image datasets and inherited label trees to move out of the store.
+
+    Args:
+        root (Path): The store root.
+        image_nodes (tuple[NgffNode, ...]): The discovered image nodes.
+        inherited_label_paths (frozenset[str]): Node paths of the inherited labels.
+
+    Returns:
+        set[Path]:
+            The directories to move out of the store.
+
+    Raises:
+        PixelIdentityError: If an image node has invalid dataset metadata.
+    """
     omitted = {
         directory
         for image_node in image_nodes
@@ -351,12 +563,21 @@ def _omitted_array_directories(root, image_nodes, inherited_label_paths):
     return omitted
 
 
-def _top_level_directories(root, directories):
-    """Drop directories nested in another one, shallowest first.
+def _top_level_directories(root: Path, directories: Iterable[Path]) -> list[Path]:
+    """
+    Drop directories nested in another one, shallowest first.
 
     Moving whole Zarr array directories on one filesystem is metadata-only.
     Keeping only top-level directories means a future nested declaration
     cannot cause the same subtree to be moved twice.
+
+    Args:
+        root (Path): The store root.
+        directories (Iterable[Path]): The candidate directories inside ``root``.
+
+    Returns:
+        list[Path]:
+            The directories that are not nested in another one.
     """
     top_level = []
     for directory in sorted(
@@ -371,8 +592,24 @@ def _top_level_directories(root, directories):
     return top_level
 
 
-def _move_arrays_to_rollback(root, rollback, directories, move):
-    """Move each omitted array directory into the rollback folder, keeping its relative path."""
+def _move_arrays_to_rollback(
+    root: Path,
+    rollback: Path,
+    directories: Iterable[Path],
+    move: Callable[..., Any],
+) -> None:
+    """
+    Move each omitted array directory into the rollback folder, keeping its relative path.
+
+    Args:
+        root (Path): The store root.
+        rollback (Path): The rollback folder.
+        directories (Iterable[Path]): The array directories to move.
+        move (Callable): Renames one directory.
+
+    Raises:
+        PixelIdentityError: If an array directory disappeared.
+    """
     for directory in directories:
         if not directory.is_dir():
             raise PixelIdentityError(
@@ -386,8 +623,17 @@ def _move_arrays_to_rollback(root, rollback, directories, move):
         sync_directory(target.parent)
 
 
-def _write_shallow_metadata(root, image_nodes, manifest):
-    """Point each image node at the shallow manifest and write the manifest."""
+def _write_shallow_metadata(
+    root: Path, image_nodes: tuple[NgffNode, ...], manifest: ShallowManifest
+) -> None:
+    """
+    Point each image node at the shallow manifest and write the manifest.
+
+    Args:
+        root (Path): The store root.
+        image_nodes (tuple[NgffNode, ...]): The discovered image nodes.
+        manifest (ShallowManifest): The shallow manifest to write.
+    """
     for image_node in image_nodes:
         image_directory = node_directory(root, image_node.node_path)
         attrs = read_attrs(metadata_path(image_directory).parent)
@@ -401,8 +647,17 @@ def _write_shallow_metadata(root, image_nodes, manifest):
     write_json(root / SHALLOW_COLLECTION_MANIFEST, manifest.to_dict())
 
 
-def _validate_staged_result(plan):
-    """Check the staged store: the manifest round-trips, labels and datasets are as planned."""
+def _validate_staged_result(plan: PrunePlan) -> None:
+    """
+    Check the staged store: the manifest round-trips, labels and datasets are as planned.
+
+    Args:
+        plan (PrunePlan): The plan of the prune.
+
+    Raises:
+        PixelIdentityError: If the manifest changed, an inherited label or
+            image dataset was retained, or a retained label node was lost.
+    """
     root = plan.root
     written = json.loads(
         (root / SHALLOW_COLLECTION_MANIFEST).read_text(encoding="utf-8")
@@ -432,7 +687,21 @@ def _declared_image_dataset_directories(
     root: Path,
     image_node_path: str,
 ) -> tuple[Path, ...]:
-    """Return the dataset (pyramid level) directories an image node declares, validated."""
+    """
+    Return the dataset (pyramid level) directories an image node declares, validated.
+
+    Args:
+        root (Path): The store root.
+        image_node_path (str): The node path of the image.
+
+    Returns:
+        tuple[Path, ...]:
+            The unique dataset directories, in declaration order.
+
+    Raises:
+        PixelIdentityError: If the multiscales or dataset metadata is missing,
+            malformed or escapes the store.
+    """
     image_node = node_directory(root, image_node_path)
     attrs = read_attrs(image_node)
     multiscales = attrs.get("multiscales")
@@ -475,7 +744,16 @@ def _declared_image_dataset_directories(
 
 
 def _tree_size(root: Path) -> int:
-    """Total size in bytes of the regular files below ``root`` (diagnostics only: it stats everything)."""
+    """
+    Total size in bytes of the regular files below ``root`` (diagnostics only: it stats everything).
+
+    Args:
+        root (Path): The directory to measure.
+
+    Returns:
+        int:
+            The total size in bytes.
+    """
     return sum(
         path.stat().st_size
         for path in root.rglob("*")

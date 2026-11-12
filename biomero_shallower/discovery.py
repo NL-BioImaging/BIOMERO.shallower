@@ -1,4 +1,19 @@
-"""Find returned OME-Zarr stores and the NGFF image and label nodes inside them.
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Find returned OME-Zarr stores and the NGFF image and label nodes inside them.
 
 Discovery only reads metadata; it never opens pixels or changes a store.
 """
@@ -7,7 +22,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .ngff import (
     LABELS_GROUP_NAME, PixelIdentityError, join_node_path, node_directory, read_attrs,
@@ -24,7 +39,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class NgffNode:
-    """One explicitly discovered image or label node in a returned store."""
+    """
+    One explicitly discovered image or label node in a returned store.
+
+    Attributes:
+        node_path (str): The node path relative to the store root.
+        role (Literal["image", "label"]): Whether the node is an image or a label.
+        parent_image_node_path (str | None): For a label, the node path of the
+            image that declares it; None for an image.
+    """
 
     node_path: str
     role: Literal["image", "label"]
@@ -32,7 +55,21 @@ class NgffNode:
 
 
 def _discover_labels(root: Path, image_node_path: str) -> list[NgffNode]:
-    """Return the label nodes an image declares in its ``labels`` group, validated."""
+    """
+    Return the label nodes an image declares in its ``labels`` group, validated.
+
+    Args:
+        root (Path): The store root.
+        image_node_path (str): The node path of the image.
+
+    Returns:
+        list[NgffNode]:
+            The label nodes of the image.
+
+    Raises:
+        PixelIdentityError: If the labels metadata is malformed, a label node
+            is duplicated or a label node has no multiscales metadata.
+    """
     image_node = node_directory(root, image_node_path)
     labels_group = image_node / LABELS_GROUP_NAME
     if not labels_group.is_dir():
@@ -69,8 +106,23 @@ def _discover_labels(root: Path, image_node_path: str) -> list[NgffNode]:
     return discovered
 
 
-def _plate_image_paths(root: Path, plate) -> list[str]:
-    """Return the image node paths of every well of a Plate, validating its metadata."""
+def _plate_image_paths(root: Path, plate: Any) -> list[str]:
+    """
+    Return the image node paths of every well of a Plate, validating its
+    metadata.
+
+    Args:
+        root (Path): The store root.
+        plate (Any): The ``plate`` object of the root NGFF attributes.
+
+    Returns:
+        list[str]:
+            The image node paths relative to ``root``.
+
+    Raises:
+        PixelIdentityError: If the plate, well or image metadata is missing or
+            malformed.
+    """
     wells = plate.get("wells") if isinstance(plate, dict) else None
     if not isinstance(wells, list):
         raise PixelIdentityError("NGFF plate metadata has no wells list")
@@ -102,7 +154,20 @@ def _plate_image_paths(root: Path, plate) -> list[str]:
 
 
 def discover_ngff_nodes(zarr_root: str | Path) -> tuple[NgffNode, ...]:
-    """Discover NGFF image-level nodes by declared image/plate metadata."""
+    """
+    Discover NGFF image-level nodes by declared image/plate metadata.
+
+    Args:
+        zarr_root (str | Path): The root of a returned Zarr store.
+
+    Returns:
+        tuple[NgffNode, ...]:
+            The image nodes, each followed by its label nodes.
+
+    Raises:
+        PixelIdentityError: If the root is neither an image nor a plate, or an
+            image or label node is duplicated or invalid.
+    """
     root = Path(zarr_root)
     attrs = read_attrs(root)
     if "multiscales" in attrs:
@@ -131,7 +196,16 @@ def discover_ngff_nodes(zarr_root: str | Path) -> tuple[NgffNode, ...]:
 
 
 def find_returned_zarr_stores(results_path: str | Path) -> tuple[Path, ...]:
-    """Find outermost returned ``*.zarr`` stores and prune their internals."""
+    """
+    Find outermost returned ``*.zarr`` stores and prune their internals.
+
+    Args:
+        results_path (str | Path): The directory to search.
+
+    Returns:
+        tuple[Path, ...]:
+            The outermost ``*.zarr`` store directories found.
+    """
     base = Path(results_path)
     stores = []
     for current, dirs, _files in os.walk(base):
