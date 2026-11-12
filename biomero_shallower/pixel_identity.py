@@ -1,4 +1,19 @@
-"""ISCC-BIO adapter for BIOMERO pixel identity contracts.
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+ISCC-BIO adapter for BIOMERO pixel identity contracts.
 
 Canonical pixel encoding and hashing stay in upstream ``iscc-bio``. This
 adapter selects stored array planes in IMAGEWALK order and records their
@@ -10,7 +25,7 @@ from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from itertools import product
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterator, Literal, Mapping, Sequence
 
 from biomero_schema.zarr import PixelIdentity, PIXEL_COMPARISON_PROFILE
 import numpy as np
@@ -22,7 +37,19 @@ BiocodeCallable = Callable[..., Mapping[str, Any]]
 
 @dataclass(frozen=True)
 class ZarrNodeSemanticGuard:
-    """Relevant metadata for the highest-resolution array of one NGFF node."""
+    """
+    Relevant metadata for the highest-resolution array of one NGFF node.
+
+    Attributes:
+        shape (tuple[int, ...]): The array shape.
+        dtype (str): The NumPy dtype name.
+        axes (tuple[str, ...]): The NGFF axis names, in array order.
+        coordinate_transformations (tuple[dict[str, Any], ...]): The dataset and
+            group coordinate transformations.
+        ngff_version (str): The NGFF version ("0.4" for Zarr v2, "0.5" for v3).
+        zarr_format (int): The Zarr format version (2 or 3).
+        dataset_path (str): The dataset path inside the node.
+    """
 
     shape: tuple[int, ...]
     dtype: str
@@ -34,6 +61,19 @@ class ZarrNodeSemanticGuard:
 
 
 def _validate_node_path(node_path: str) -> PurePosixPath:
+    """
+    Parse a Zarr node path, rejecting empty, backslash, absolute and escaping paths.
+
+    Args:
+        node_path (str): The node path inside the Zarr store.
+
+    Returns:
+        PurePosixPath:
+            The parsed path.
+
+    Raises:
+        PixelIdentityError: If the path is unsafe.
+    """
     if not node_path or "\\" in node_path:
         raise PixelIdentityError(f"Unsafe Zarr node path: {node_path!r}")
     parsed = PurePosixPath(node_path)
@@ -43,13 +83,40 @@ def _validate_node_path(node_path: str) -> PurePosixPath:
 
 
 def _read_json_object(path: Path, description: str) -> dict[str, Any]:
+    """
+    Read one JSON object file.
+
+    Args:
+        path (Path): The JSON file.
+        description (str): What the file is, for error messages.
+
+    Returns:
+        dict[str, Any]:
+            The parsed JSON object.
+    """
     return read_json_object(path, description)
 
 
 def read_zarr_semantic_guard(
     zarr_root: str | Path, node_path: str, *, dataset_path: str | None = None
 ) -> ZarrNodeSemanticGuard:
-    """Read one explicit NGFF 0.4/v2 or 0.5/v3 image's semantic guard."""
+    """
+    Read one explicit NGFF 0.4/v2 or 0.5/v3 image's semantic guard.
+
+    Args:
+        zarr_root (str | Path): The Zarr store root.
+        node_path (str): The image node path inside the store ("." for the root).
+        dataset_path (str, optional): The dataset to read; defaults to the first
+            (highest-resolution) dataset.
+
+    Returns:
+        ZarrNodeSemanticGuard:
+            The semantic guard of the selected dataset.
+
+    Raises:
+        PixelIdentityError: If the node path is unsafe or the NGFF or Zarr
+            metadata is missing, inconsistent or unsupported.
+    """
     parsed_node = _validate_node_path(node_path)
     node = Path(zarr_root)
     if node_path != ".":
@@ -136,8 +203,24 @@ def read_zarr_semantic_guard(
     )
 
 
-def read_zarr_comparison_levels(zarr_root, node_path):
-    """Metadata-only levels preserving dtype and every non-spatial position."""
+def read_zarr_comparison_levels(
+    zarr_root: str | Path, node_path: str
+) -> tuple[ZarrNodeSemanticGuard, ...]:
+    """
+    Metadata-only levels preserving dtype and every non-spatial position.
+
+    Args:
+        zarr_root (str | Path): The Zarr store root.
+        node_path (str): The image node path inside the store.
+
+    Returns:
+        tuple[ZarrNodeSemanticGuard, ...]:
+            The comparable levels, smallest first.
+
+    Raises:
+        PixelIdentityError: If the axes are unsupported or a dataset entry is
+            invalid.
+    """
     root = Path(zarr_root)
     node = root if node_path == "." else root / _validate_node_path(node_path)
     attrs = group_metadata(node)[2]
@@ -159,16 +242,36 @@ def read_zarr_comparison_levels(zarr_root, node_path):
     return tuple(sorted(levels, key=lambda level: np.prod(level.shape)))
 
 
-def comparison_level_matches(level, identity):
-    """Dataset spelling is provenance, not a compatibility condition."""
+def comparison_level_matches(level: ZarrNodeSemanticGuard, identity: PixelIdentity | None) -> bool:
+    """
+    Dataset spelling is provenance, not a compatibility condition.
+
+    Args:
+        level (ZarrNodeSemanticGuard): The comparison level to test.
+        identity (PixelIdentity | None): The recorded pixel identity.
+
+    Returns:
+        bool:
+            True if the level matches the identity's current-profile comparison
+            shape, dtype, axes and coordinate transformations.
+    """
     return (identity is not None and identity.is_current_profile
             and level.shape == identity.comparison_shape
             and level.dtype == identity.dtype and level.axes == identity.axes
             and level.coordinate_transformations == identity.comparison_coordinate_transformations)
 
 
-def _zarr_planes(array, axes):
-    """Decode planes in IMAGEWALK Z/C/T order; upstream owns byte encoding."""
+def _zarr_planes(array: Any, axes: Sequence[str]) -> Iterator[Any]:
+    """
+    Decode planes in IMAGEWALK Z/C/T order; upstream owns byte encoding.
+
+    Args:
+        array (Any): The opened Zarr array.
+        axes (Sequence[str]): The axis names, in array order.
+
+    Yields:
+        Any: One upstream ``Plane`` per Z/C/T position.
+    """
     Plane = import_module("iscc_bio.imagewalk.common").Plane
     sizes = dict(zip(axes, array.shape))
     for z, c, t in product(range(sizes.get("z", 1)), range(sizes.get("c", 1)),
@@ -181,8 +284,21 @@ def _zarr_planes(array, axes):
         yield Plane(pixels, 0, z, c, t)
 
 
-def read_zarr_v2_semantic_guard(zarr_root, node_path):
-    """Compatibility API for consumers that still require a v2-only profile."""
+def read_zarr_v2_semantic_guard(zarr_root: str | Path, node_path: str) -> ZarrNodeSemanticGuard:
+    """
+    Compatibility API for consumers that still require a v2-only profile.
+
+    Args:
+        zarr_root (str | Path): The Zarr store root.
+        node_path (str): The image node path inside the store.
+
+    Returns:
+        ZarrNodeSemanticGuard:
+            The semantic guard of the image.
+
+    Raises:
+        PixelIdentityError: If the array is not Zarr v2 or the metadata is invalid.
+    """
     guard = read_zarr_semantic_guard(zarr_root, node_path)
     if guard.zarr_format != 2:
         raise PixelIdentityError("Only Zarr v2 arrays are supported by this consumer")
@@ -190,11 +306,17 @@ def read_zarr_v2_semantic_guard(zarr_root, node_path):
 
 
 class IsccBioIdentityProvider:
-    """Generate one fingerprint through upstream's pixels-only API.
+    """
+    Generate one fingerprint through upstream's pixels-only API.
 
     ``generate_biocode`` and ``tool_version`` are injectable so callers can test
     orchestration without importing the sizeable reader stack. Production use
     loads the public API lazily from the optional ``identity`` dependency.
+
+    Attributes:
+        _generate_biocode (BiocodeCallable | None): Injected upstream generator.
+        _tool_version (str | None): Injected upstream version.
+        _imagewalk_revision (str | None): Injected IMAGEWALK revision.
     """
 
     def __init__(
@@ -204,11 +326,33 @@ class IsccBioIdentityProvider:
         tool_version: str | None = None,
         imagewalk_revision: str | None = None,
     ) -> None:
+        """
+        Create a provider.
+
+        Args:
+            generate_biocode (BiocodeCallable, optional): Replaces upstream's
+                ``generate_biocode``; loaded lazily when None.
+            tool_version (str, optional): Replaces the installed ``iscc-bio``
+                version; looked up lazily when None.
+            imagewalk_revision (str, optional): Overrides the recorded IMAGEWALK
+                revision; derived from the upstream result when None.
+        """
         self._generate_biocode = generate_biocode
         self._tool_version = tool_version
         self._imagewalk_revision = imagewalk_revision
 
     def _load_upstream(self) -> tuple[BiocodeCallable, str]:
+        """
+        Resolve the upstream generator and its version.
+
+        Returns:
+            tuple[BiocodeCallable, str]:
+                The generator and the ``iscc-bio`` version.
+
+        Raises:
+            PixelIdentityError: If ISCC-BIO is not installed or its version
+                cannot be determined.
+        """
         generate = self._generate_biocode
         if generate is None:
             try:
@@ -242,7 +386,31 @@ class IsccBioIdentityProvider:
         full_resolution: bool = False,
         dataset_path: str | None = None,
     ) -> PixelIdentity:
-        """Hash exactly one Zarr image node and attach its semantic guard."""
+        """
+        Hash exactly one Zarr image node and attach its semantic guard.
+
+        Args:
+            zarr_root (str | Path): The Zarr store root.
+            node_path (str): The image node path inside the store.
+            role (Literal["image", "label"]): Whether the node is an image or a label.
+            shape (Sequence[int]): The expected full-resolution shape.
+            dtype (str): The expected dtype name.
+            axes (Sequence[str]): The expected axis names.
+            coordinate_transformations (Sequence[Mapping[str, Any]], optional): The
+                expected coordinate transformations.
+            full_resolution (bool, optional): Hash the full-resolution level
+                instead of the smallest comparison level.
+            dataset_path (str, optional): Hash this comparison level.
+
+        Returns:
+            PixelIdentity:
+                The identity of the selected level.
+
+        Raises:
+            PixelIdentityError: If the supplied semantics differ from the image
+                metadata, the requested level is incompatible, the pixels cannot
+                be read, or upstream returns an invalid result.
+        """
         parsed_node = _validate_node_path(node_path)
         generate, tool_version = self._load_upstream()
         target = Path(zarr_root).resolve(strict=True)
@@ -293,7 +461,29 @@ class IsccBioIdentityProvider:
         axes: Sequence[str],
         coordinate_transformations: Sequence[Mapping[str, Any]],
     ) -> PixelIdentity:
-        """Validate one public API result and produce the shared contract."""
+        """
+        Validate one public API result and produce the shared contract.
+
+        Args:
+            response (Mapping[str, Any]): The upstream result.
+            source_description (str): What was hashed, for error messages.
+            tool_version (str): The ``iscc-bio`` version.
+            node_path (str): The image node path.
+            role (Literal["image", "label"]): Whether the node is an image or a label.
+            shape (Sequence[int]): The array shape.
+            dtype (str): The dtype name.
+            axes (Sequence[str]): The axis names.
+            coordinate_transformations (Sequence[Mapping[str, Any]]): The
+                coordinate transformations.
+
+        Returns:
+            PixelIdentity:
+                The identity built from the single returned scene.
+
+        Raises:
+            PixelIdentityError: If the result does not hold exactly one scene
+                with ordered Data and Instance code units.
+        """
         parts = response.get("parts")
         if not isinstance(parts, Sequence) or isinstance(parts, (str, bytes)):
             raise PixelIdentityError("iscc-bio must return an ordered parts list")
@@ -348,11 +538,20 @@ class IsccBioIdentityProvider:
 
 
 def pixel_identities_match(left: PixelIdentity, right: PixelIdentity) -> bool:
-    """Return whether exact bytes and their NGFF semantic guards agree.
+    """
+    Return whether exact bytes and their NGFF semantic guards agree.
 
     Node paths and aggregate/data codes are intentionally excluded: a raw scene
     and its canonical Zarr node can live at different paths, while the Instance
     Code is the exact byte identity used for deduplication.
+
+    Args:
+        left (PixelIdentity): The first identity.
+        right (PixelIdentity): The second identity.
+
+    Returns:
+        bool:
+            True if both are set, current-profile and equal in the compared fields.
     """
     return (
         left is not None and right is not None

@@ -105,6 +105,11 @@ disposable copy of a returned result.
 Match the existing `tests/test_*.py` style; cover rollback and idempotent rerun
 for any change to the transaction.
 
+On Windows a test can fail at random with `PermissionError` on a rename:
+antivirus or the indexer briefly holds the directory. This is a test
+environment artefact. `tests/conftest.py` retries `os.replace` for tests; never
+add retry logic to production code.
+
 ## Documentation
 
 MkDocs Material with mkdocstrings; pages are listed in `mkdocs.yml`:

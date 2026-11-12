@@ -1,3 +1,17 @@
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Reject cross-format deduplication before opening fields or reading pixels."""
 import json
 from unittest.mock import patch
@@ -40,8 +54,8 @@ def test_cross_format_skips_discovery_and_identity(tmp_path, version, plate, bin
         (root / TRANSFER_INPUT_MARKER).write_text(json.dumps(item.to_dict()))
     before = snapshot(root)
 
-    with patch("biomero_shallower.result_zarr.discover_ngff_nodes") as discover, \
-            patch("biomero_shallower.result_zarr.IsccBioIdentityProvider") as identity:
+    with patch("biomero_shallower.evaluation.discover_ngff_nodes") as discover, \
+            patch("biomero_shallower.evaluation.IsccBioIdentityProvider") as identity:
         decision = evaluate_returned_zarr(root, _manifest(item))
 
     assert decision.outcome == "keep-full"

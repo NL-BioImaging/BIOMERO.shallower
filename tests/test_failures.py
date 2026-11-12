@@ -1,5 +1,18 @@
+# -*- coding: utf-8 -*-
+# Copyright 2026 Torec Luik
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -7,7 +20,7 @@ import pytest
 from test_result_zarr import _make_image, _manifest, _input, _identity, IdentityProvider
 from biomero_shallower.cli import load_manifest
 from biomero_shallower.operations import normalize
-from biomero_shallower.transaction import recover
+from biomero_shallower.evaluation import is_failure_reason
 
 
 def snapshot(root):
@@ -44,7 +57,7 @@ def test_commit_cleanup_interruption_preserves_receipt(tmp_path):
     root = tmp_path / 'result.zarr'
     _make_image(root, labels=('cells',))
     manifest = _manifest(_input(0))
-    with patch('biomero_shallower.result_zarr.shutil.rmtree', side_effect=KeyboardInterrupt):
+    with patch('biomero_shallower.transaction.shutil.rmtree', side_effect=KeyboardInterrupt):
         with pytest.raises(KeyboardInterrupt):
             normalize(root, manifest, identity_provider=IdentityProvider(_identity()))
     assert not (root / '0').exists()
@@ -53,8 +66,30 @@ def test_commit_cleanup_interruption_preserves_receipt(tmp_path):
     assert not list(tmp_path.glob('.*.biomero-prune-*'))
 
 
+@pytest.mark.parametrize('reason, failure', [
+    ('no-canonical-input-snapshot', True),
+    ('invalid-transfer-input-marker', True),
+    ('untrusted-transfer-input-marker', True),
+    ('ambiguous-transfer-artifact', True),
+    ('ambiguous-input-identity', True),
+    ('unsupported-canonical-profile', True),
+    ('unsupported-ngff: mixed', True),
+    ('identity-unavailable: boom', True),
+    ('label-identity-unavailable: boom', True),
+    ('normalization-failed: boom', True),
+    ('no-image-nodes', False),
+    ('image-layout-mismatch', False),
+    ('image-semantics-mismatch', False),
+    ('pixels-changed', False),
+    ('no-input-identity-match', False),
+    ('input-image-unchanged', False),
+])
+def test_is_failure_reason(reason, failure):
+    assert is_failure_reason(reason) is failure
+
+
 def test_production_does_not_measure_recursive_bytes(tmp_path):
     root = tmp_path / 'result.zarr'
     _make_image(root, labels=('cells',))
-    with patch('biomero_shallower.result_zarr._tree_size', side_effect=AssertionError('byte scan')):
+    with patch('biomero_shallower.normalization._tree_size', side_effect=AssertionError('byte scan')):
         assert normalize(root, _manifest(_input(0)), identity_provider=IdentityProvider(_identity())).result == 'normalized'

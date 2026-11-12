@@ -35,7 +35,17 @@ tasks, rather than trusting a batch file found in a workflow archive.
 
 An exception before commit restores arrays and original attributes. A killed
 process leaves durable intent: on resume, uncommitted intent is rolled back;
-committed intent only finishes cleanup. A valid committed report can be reused
+committed intent only finishes cleanup.
+
+Cleanup order is a safety property. Every journal write is atomic (stage as
+`journal.json.tmp`, fsync, rename, sync the directory). Cleanup deletes the
+rollback folder's arrays first, syncs the folder, and removes `journal.json`
+last, then the folder itself. A kill at any step therefore leaves either a
+journal that `recover` completes, or a folder that holds only an unfinished
+journal write and is removed as empty. `remove_rollback` refuses a folder whose
+journal is uncommitted; those arrays go back through `recover`. Recovery after
+a rollback restores the arrays, then the saved attributes, then deletes the
+shallow manifest and report. A valid committed report can be reused
 without generating identities again. The canonical store is never mutated or
 mounted by the Slurm helper. Returned symlink trees are rejected.
 
@@ -44,6 +54,16 @@ POSIX locks, atomic rename, and fsync on the mounted filesystem are required.
 The helper does not claim durability on filesystems that ignore these primitives.
 Never remove a prune journal to free space: it may contain the only remaining
 copy of a pre-commit array.
+
+A shallow result is deliberately not a valid OME-Zarr until it is
+reconstructed: the duplicate arrays and the `multiscales` metadata are removed,
+so generic readers fail instead of showing pixels. Keeping the metadata and
+dropping only the chunk files would pass validators, but readers would silently
+return blank images and a shallow result could be treated as a canonical input.
+That variant is deferred to the RFC-8 work in
+[BIOMERO.shallower#36](https://github.com/NL-BioImaging/BIOMERO.shallower/issues/36).
+See [Why BIOMERO shallows results](https://nl-bioimaging.github.io/NL-BIOMERO/developer/biomero-shallow-zarr.html)
+for the rationale.
 
 ## Slurm events and detached resume
 
@@ -160,3 +180,22 @@ accept OMERO connections.
       members:
         - normalize
         - validate_report
+
+The importer decides after a failed prune whether it had committed, and how to
+classify a keep-full reason, with these helpers instead of reading the journal
+layout itself:
+
+::: biomero_shallower.transaction
+    options:
+      members:
+        - PruneJournal
+        - pending_prune_journals
+        - prune_was_committed
+        - recover
+        - remove_rollback
+
+::: biomero_shallower.evaluation
+    options:
+      members:
+        - ReturnedZarrDecision
+        - is_failure_reason
