@@ -82,12 +82,12 @@ def test_helper_image_rejects_unpublished_versions(version):
         helper_image(version)
 
 
-def test_helper_image_defaults_to_installed_version():
-    try:
-        expected = helper_image(__version__)
-    except ValueError:  # a development checkout has no published image
-        with pytest.raises(ValueError):
-            helper_image()
-    else:
-        assert helper_image() == expected
+def test_helper_image_defaults_to_the_installed_release_version(monkeypatch):
+    monkeypatch.setattr("biomero_shallower.capabilities.__version__", "0.1.0b9")
+    assert helper_image() == "cellularimagingcf/biomero-shallower:0.1.0-beta.9"
 
+
+def test_helper_image_defaults_to_the_installed_version_and_rejects_a_dev_build(monkeypatch):
+    monkeypatch.setattr("biomero_shallower.capabilities.__version__", "0.1.0b9.dev3+g1234")
+    with pytest.raises(ValueError, match="No published helper image"):
+        helper_image()

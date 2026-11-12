@@ -77,6 +77,7 @@ def new_group_metadata(node, attrs, version):
 
 
 def safe_node_path(value: str) -> str:
+    """Return a node path that is relative and stays inside its store, or raise."""
     if not value or "\\" in value:
         raise PixelIdentityError(f"Unsafe NGFF node path: {value!r}")
     path = PurePosixPath(value)
@@ -86,21 +87,25 @@ def safe_node_path(value: str) -> str:
 
 
 def join_node_path(*parts: str) -> str:
+    """Join node path parts, ignoring empty parts and "." (the store root)."""
     useful = [part for part in parts if part and part != "."]
     return str(PurePosixPath(*useful)) if useful else "."
 
 
 def node_directory(root: Path, node_path: str) -> Path:
+    """Return the directory of a node path inside ``root``."""
     if node_path == ".":
         return root
     return root.joinpath(*PurePosixPath(node_path).parts)
 
 
 def write_attrs(node: Path, attrs: dict) -> None:
+    """Atomically replace a node's NGFF attributes."""
     path, value = encoded_attrs(node, attrs)
     write_json(path, value)
 
 
 def write_labels_group(node: Path, names: list[str], version: int) -> None:
+    """Write the ``labels`` group metadata listing ``names`` for a Zarr format version."""
     for path, value in new_group_metadata(node, {"labels": names}, version).items():
         write_json(path, value)

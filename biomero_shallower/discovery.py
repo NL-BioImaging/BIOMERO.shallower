@@ -1,4 +1,7 @@
-"""TODO."""
+"""Find returned OME-Zarr stores and the NGFF image and label nodes inside them.
+
+Discovery only reads metadata; it never opens pixels or changes a store.
+"""
 
 from dataclasses import dataclass
 import logging
@@ -6,19 +9,11 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from .ngff import join_node_path, node_directory, read_attrs, safe_node_path
+from .pixel_identity import PixelIdentityError
+from .transaction import ROLLBACK_INFIX
 
-from .pixel_identity import (
-    PixelIdentityError,
-)
-from .ngff import (
-    read_attrs,
-)
-from .transaction import (
-    ROLLBACK_INFIX,
-)
-
-
-from .ngff import join_node_path, node_directory, safe_node_path
+__all__ = ["NgffNode", "discover_ngff_nodes", "find_returned_zarr_stores"]
 
 logger = logging.getLogger(__name__)
 

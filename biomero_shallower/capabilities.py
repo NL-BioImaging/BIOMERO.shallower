@@ -31,13 +31,14 @@ def capabilities() -> dict:
     }
 
 
-def helper_image(version: str = __version__) -> str:
+def helper_image(version: str | None = None) -> str:
     """Return the published helper image (repository:tag) for a package version.
 
     Maps a PEP 440 release version to the tag the release workflow publishes:
     `0.1.0` -> `0.1.0`, `0.1.0b9` -> `0.1.0-beta.9`, `0.1.0rc1` -> `0.1.0-rc.1`.
     Development and local versions have no published image and raise ValueError.
     """
+    version = __version__ if version is None else version
     match = _RELEASE_VERSION.fullmatch(version)
     if match is None:
         raise ValueError(f"No published helper image for version {version!r}")

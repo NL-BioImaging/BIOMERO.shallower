@@ -248,9 +248,10 @@ def normalize(root, manifest, *, contract=DEFAULT_CONTRACT, identity_workers=1,
 
 
 def _reject_symlinks(root):
-    """Never traverse a link into a canonical store, even through metadata."""
-    if root.is_symlink():
-        raise ValueError("Returned Zarr cannot be a symlink")
+    """Never traverse a link into a canonical store, even through metadata.
+
+    ``root`` itself was checked before the lock was taken.
+    """
     if root.is_dir():
         for directory, dirs, names in os.walk(root):
             if any((Path(directory) / name).is_symlink() for name in dirs + names):
@@ -320,18 +321,18 @@ def _normalize_eligible(root, manifest, decision, adapter, report_for, *,
 
     The trusted report is written and validated just before the prune commits.
     """
-    report = report_for()
+    committed_reports = []
 
     def commit(shallow_manifest):
-        nonlocal report
-        report = report_for(shallow_manifest)
-        write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
+        committed_reports.append(report_for(shallow_manifest))
+        write_json(root / SHALLOW_OPERATION_REPORT, committed_reports[-1].to_dict())
         validate_report(root, manifest, image=image, tool_version=__version__)
 
     try:
         normalized = adapter.normalize(
             decision, manifest.workflow_id,
             before_commit=commit, measure_bytes=measure_bytes)
+        report = committed_reports[-1]
         if measure_bytes:
             report = report.model_copy(update={
                 "bytes_before": normalized.bytes_before,
