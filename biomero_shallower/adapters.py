@@ -6,6 +6,8 @@ class Ngff04ZarrV2:
 
     profile = "ngff-0.4-zarr-v2"
 
+    # The evaluation and normalization modules are imported on use so that
+    # importing this module (and so `capabilities`) stays light.
     def evaluate(self, root, manifest, **kwargs):
         from .evaluation import evaluate_returned_zarr
         return evaluate_returned_zarr(root, manifest, **kwargs)

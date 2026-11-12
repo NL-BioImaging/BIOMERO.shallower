@@ -19,8 +19,12 @@ BIOMERO.importer and on Slurm by biomero core.
 
 ## Layout
 
-- `biomero_shallower/`: package (`cli.py`, `operations.py`, `transaction.py`,
-  `adapters.py`, `ngff.py`, `pixel_identity.py`, `migration.py`).
+- `biomero_shallower/`: package. `cli.py` and `operations.py` are the entry
+  points; `discovery.py`, `evaluation.py`, `normalization.py`,
+  `materialization.py` and `registration.py` hold the returned-store logic
+  (`result_zarr.py` re-exports their public API); `transaction.py` is the prune
+  journal; `filesystem.py`, `ngff.py` and `pixel_identity.py` are low-level;
+  `adapters.py`, `capabilities.py` and `migration.py` complete the surface.
 - `tests/`: pytest suite and `container_smoke.py`.
 - `docs/`, `mkdocs.yml`: MkDocs documentation.
 - `Dockerfile`, `requirements.lock`: container image and its pinned runtime.
