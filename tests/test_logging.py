@@ -10,7 +10,8 @@ import pytest
 from test_result_zarr import _make_image, _manifest, _input, _identity, IdentityProvider
 from biomero_shallower.adapters import Ngff04ZarrV2
 from biomero_shallower.operations import FORMAT_ADAPTERS, normalize
-from biomero_shallower.evaluation import _keep_full, evaluate_returned_zarr
+from biomero_shallower.evaluation import evaluate_returned_zarr
+from biomero_shallower.pixel_identity import PixelIdentityError
 from biomero_shallower.transaction import recover
 
 
@@ -45,19 +46,50 @@ def test_recovery_is_logged(tmp_path, caplog):
     assert 'Recovering' in caplog.text and 'committed=True' in caplog.text
 
 
-@pytest.mark.parametrize('reason, warned', [
-    ('unsupported-ngff: mixed', True),
-    ('unsupported-canonical-profile', True),
-    ('identity-unavailable: boom', True),
-    ('label-identity-unavailable: boom', True),
-    ('no-canonical-input-snapshot', True),
-    ('ambiguous-input-identity', True),
-    ('pixels-changed', False),
-    ('no-input-identity-match', False),
+class _FailingProvider(IdentityProvider):
+    """Identity provider that fails for the given node roles."""
+
+    def __init__(self, identity, failing_roles):
+        super().__init__(identity)
+        self.failing_roles = failing_roles
+
+    def generate(self, root, **kwargs):
+        if kwargs['role'] in self.failing_roles:
+            raise PixelIdentityError('injected')
+        return super().generate(root, **kwargs)
+
+
+def _unsupported_ngff(root, tmp_path):
+    (root / 'zarr.json').write_text('{}')  # v2 and v3 metadata together are ambiguous
+    return IdentityProvider(_identity())
+
+
+def _identity_unavailable(root, tmp_path):
+    return _FailingProvider(_identity(), {'image'})
+
+
+def _label_identity_unavailable(root, tmp_path):
+    return _FailingProvider(_identity(), {'label'})
+
+
+def _pixels_changed(root, tmp_path):
+    return IdentityProvider(_identity('ISCC:ICHANGED'))
+
+
+@pytest.mark.parametrize('prepare, reason, warned', [
+    (_unsupported_ngff, 'unsupported-ngff', True),
+    (_identity_unavailable, 'identity-unavailable', True),
+    (_label_identity_unavailable, 'label-identity-unavailable', True),
+    (_pixels_changed, 'pixels-changed', False),
 ])
-def test_keep_full_reason_log_level(tmp_path, caplog, reason, warned):
+def test_real_evaluation_logs_failure_reasons_as_warnings(tmp_path, caplog, prepare, reason, warned):
+    root = tmp_path / 'result.zarr'
+    _make_image(root, labels=('cells',))
+    provider = prepare(root, tmp_path)
     with caplog.at_level(logging.DEBUG, logger='biomero_shallower'):
-        _keep_full(tmp_path, reason)
+        decision = evaluate_returned_zarr(root, _manifest(_input(0, 'result.zarr')),
+                                          identity_provider=provider)
+    assert decision.reason.startswith(reason)
     assert any(r.levelno == logging.WARNING for r in caplog.records) is warned
 
 

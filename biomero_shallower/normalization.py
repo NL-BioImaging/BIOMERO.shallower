@@ -1,4 +1,10 @@
-"""TODO."""
+"""Transactional pruning: move verified duplicate arrays out of a returned store.
+
+`normalize_returned_zarr` plans the prune (nothing is touched), journals the
+intent, moves the arrays into a sibling rollback folder, rewrites the image
+metadata, validates the staged store, commits the journal and only then
+deletes the rollback folder. A failure before the commit rolls everything back.
+"""
 
 from dataclasses import dataclass
 import json
@@ -18,22 +24,20 @@ from biomero_schema.zarr import (
     ShallowManifest,
 )
 
-from .pixel_identity import (
-    PixelIdentityError,
+from .discovery import NgffNode, discover_ngff_nodes
+from .evaluation import BASIS_PIXEL_COMPARISON, ReturnedZarrDecision
+from .filesystem import sync_directory, write_json
+from .ngff import (
+    interchange_profile as node_profile, join_node_path, metadata_path,
+    node_directory, read_attrs, safe_node_path, write_attrs,
 )
 from .output_declarations import references_omitted_files
-from .ngff import (
-    interchange_profile as node_profile, metadata_path, read_attrs,
-)
-from .filesystem import write_json
+from .pixel_identity import PixelIdentityError
 from .transaction import (
-    begin, commit, recover, remove_rollback, rollback_path, sync_directory,
+    begin, commit, recover, remove_rollback, rollback_path,
 )
 
-
-from .ngff import join_node_path, node_directory, safe_node_path, write_attrs
-from .discovery import discover_ngff_nodes
-from .evaluation import ReturnedZarrDecision
+__all__ = ["NormalizedShallowResult", "PrunePlan", "normalize_returned_zarr"]
 
 logger = logging.getLogger(__name__)
 
@@ -48,64 +52,30 @@ class NormalizedShallowResult:
     bytes_after: int | None
 
 
-def _declared_image_dataset_directories(
-    root: Path,
-    image_node_path: str,
-) -> tuple[Path, ...]:
-    image_node = node_directory(root, image_node_path)
-    attrs = read_attrs(image_node)
-    multiscales = attrs.get("multiscales")
-    if not isinstance(multiscales, list) or not multiscales:
-        raise PixelIdentityError(
-            f"NGFF image node has no multiscales metadata: {image_node_path}"
-        )
-    directories = []
-    for multiscale in multiscales:
-        datasets = (
-            multiscale.get("datasets")
-            if isinstance(multiscale, dict)
-            else None
-        )
-        if not isinstance(datasets, list) or not datasets:
-            raise PixelIdentityError(
-                f"NGFF multiscales has no datasets: {image_node_path}"
-            )
-        for dataset in datasets:
-            dataset_path = (
-                dataset.get("path") if isinstance(dataset, dict) else None
-            )
-            if not isinstance(dataset_path, str):
-                raise PixelIdentityError(
-                    f"NGFF dataset path is missing: {image_node_path}"
-                )
-            dataset_path = safe_node_path(dataset_path)
-            directory = node_directory(
-                root,
-                join_node_path(image_node_path, dataset_path),
-            )
-            try:
-                directory.relative_to(root)
-            except ValueError as exc:
-                raise PixelIdentityError(
-                    f"NGFF dataset escapes its store: {dataset_path}"
-                ) from exc
-            directories.append(directory)
-    return tuple(dict.fromkeys(directories))
+@dataclass(frozen=True)
+class PrunePlan:
+    """Everything a prune does, decided before any file is touched."""
 
-
-def _tree_size(root: Path) -> int:
-    return sum(
-        path.stat().st_size
-        for path in root.rglob("*")
-        if path.is_file() and not path.is_symlink()
-    )
+    root: Path
+    rollback: Path
+    manifest: ShallowManifest
+    image_nodes: tuple[NgffNode, ...]
+    label_nodes: tuple[NgffNode, ...]
+    # Every image dataset and inherited label directory that must be gone afterwards.
+    omitted_directories: frozenset[Path]
+    # The subset that is actually moved: directories nested in another are dropped.
+    moved_directories: tuple[Path, ...]
+    inherited_label_paths: frozenset[str]
+    # Original image-node attribute files and their bytes, restored on rollback.
+    original_attrs: dict[Path, bytes]
 
 
 def normalize_returned_zarr(
     decision: ReturnedZarrDecision,
     workflow_id: UUID | str,
     *,
-    replace=os.replace,
+    move=os.replace,
+    replace=None,
     measure_bytes: bool = False,
     before_commit=None,
 ) -> NormalizedShallowResult:
@@ -122,7 +92,40 @@ def normalize_returned_zarr(
     every file in a Plate can dominate the complete transaction on a mounted
     filesystem.  ``measure_bytes`` is intended for diagnostics and benchmarks,
     not the interactive import path.
+
+    ``move`` renames one directory (``os.replace`` by default; tests inject
+    failures). ``replace`` is the deprecated former name of ``move``, still
+    accepted for existing callers.
     """
+    if replace is not None:
+        move = replace
+    plan = _plan_prune(decision, workflow_id)
+    bytes_before = _tree_size(plan.root) if measure_bytes else None
+    logger.info(f"Pruning {plan.root}: moving {len(plan.moved_directories)} "
+                f"array directories to {plan.rollback}")
+    try:
+        journal = _begin_prune(plan)
+        bytes_after = _execute_prune(plan, journal, move=move,
+                                     measure_bytes=measure_bytes,
+                                     before_commit=before_commit)
+    except Exception:
+        logger.info(f"Prune of {plan.root} failed; rolling back")
+        _roll_back(plan.root)
+        raise
+    # Validation is the commit boundary. Cleanup only unlinks verified
+    # duplicate pixels, so it must not attempt a rollback after a partial
+    # filesystem deletion.
+    remove_rollback(plan.rollback)
+    return NormalizedShallowResult(
+        store_path=plan.root,
+        manifest=plan.manifest,
+        bytes_before=bytes_before,
+        bytes_after=bytes_after,
+    )
+
+
+def _plan_prune(decision, workflow_id):
+    """Check the decision against the store and plan the prune without touching it."""
     root = _require_prunable_store(decision)
     nodes = discover_ngff_nodes(root)
     image_nodes = tuple(node for node in nodes if node.role == "image")
@@ -135,7 +138,7 @@ def normalize_returned_zarr(
         identity.node_path: identity
         for identity in decision.image_identities
     }
-    if (decision.decision_basis == "pixel-comparison"
+    if (decision.decision_basis == BASIS_PIXEL_COMPARISON
             and set(returned_by_path) != {node.node_path for node in image_nodes}):
         raise PixelIdentityError(
             "Returned identities no longer describe the discovered image nodes"
@@ -146,53 +149,73 @@ def normalize_returned_zarr(
         decision, workflow_id, root, image_nodes, input_sources,
         interchange_profile, returned_by_path)
 
-    inherited_label_paths = {
+    inherited_label_paths = frozenset(
         component.logical_node_path
         for component in decision.label_components
         if component.source is not None
-    }
+    )
     omitted_directories = _omitted_array_directories(
         root, image_nodes, inherited_label_paths)
     if references_omitted_files(root, omitted_directories):
         raise PixelIdentityError("RO-Crate inventories omitted arrays; retain full storage")
-    top_level_omitted = _top_level_directories(root, omitted_directories)
-
-    rollback = rollback_path(root, uuid4().hex)
-    bytes_before = _tree_size(root) if measure_bytes else None
     if (root / SHALLOW_COLLECTION_MANIFEST).exists():
         raise PixelIdentityError(
             f"Returned store already has {SHALLOW_COLLECTION_MANIFEST}"
         )
-
     original_attrs = {
         metadata_path(node_directory(root, node.node_path)):
         metadata_path(node_directory(root, node.node_path)).read_bytes()
         for node in image_nodes
     }
-    logger.info(f"Pruning {root}: moving {len(top_level_omitted)} array directories to {rollback}")
-    try:
-        bytes_after = _prune_transaction(
-            root, rollback, manifest, image_nodes, label_nodes,
-            top_level_omitted, omitted_directories, inherited_label_paths,
-            original_attrs, replace=replace, measure_bytes=measure_bytes,
-            before_commit=before_commit)
-    except Exception:
-        logger.info(f"Prune of {root} failed; rolling back")
-        # Restore metadata before the arrays so readers never see valid
-        # multiscales pointing at only a partially restored pyramid.
-        recover(root)
-        raise
-
-    # Validation is the commit boundary. Cleanup only unlinks verified
-    # duplicate pixels, so it must not attempt a rollback after a partial
-    # filesystem deletion.
-    remove_rollback(rollback)
-    return NormalizedShallowResult(
-        store_path=root,
+    return PrunePlan(
+        root=root,
+        rollback=rollback_path(root, uuid4().hex),
         manifest=manifest,
-        bytes_before=bytes_before,
-        bytes_after=bytes_after,
+        image_nodes=image_nodes,
+        label_nodes=label_nodes,
+        omitted_directories=frozenset(omitted_directories),
+        moved_directories=tuple(_top_level_directories(root, omitted_directories)),
+        inherited_label_paths=inherited_label_paths,
+        original_attrs=original_attrs,
     )
+
+
+def _begin_prune(plan):
+    """Create the rollback folder and journal the intent; return the journal."""
+    plan.rollback.mkdir()
+    journal = begin(plan.root, plan.rollback, plan.moved_directories, plan.original_attrs)
+    sync_directory(plan.root.parent)
+    return journal
+
+
+def _execute_prune(plan, journal, *, move, measure_bytes, before_commit):
+    """Move the arrays out, rewrite metadata, validate, then commit the journal.
+
+    Returns the store size after pruning (None unless ``measure_bytes``).
+    Raises on any failure before the commit; the caller rolls back.
+    """
+    _move_arrays_to_rollback(plan.root, plan.rollback, plan.moved_directories, move)
+    _write_shallow_metadata(plan.root, plan.image_nodes, plan.manifest)
+    _validate_staged_result(plan)
+    bytes_after = _tree_size(plan.root) if measure_bytes else None
+    if before_commit is not None:
+        before_commit(plan.manifest)
+    commit(journal)
+    logger.info(f"Committed prune of {plan.root}")
+    return bytes_after
+
+
+def _roll_back(root):
+    """Undo a failed prune; a failure to do so is logged and never masks the prune error.
+
+    `recover` restores the arrays, then the saved attributes, then drops the
+    shallow files. If it fails too, the next `normalize` or `recover` retries.
+    """
+    try:
+        recover(root)
+    except Exception:
+        logger.exception(f"Rollback of {root} failed; run recover to retry")
+
 
 
 def _require_prunable_store(decision: ReturnedZarrDecision) -> Path:
@@ -345,31 +368,7 @@ def _top_level_directories(root, directories):
     return top_level
 
 
-def _prune_transaction(root, rollback, manifest, image_nodes, label_nodes,
-                       top_level_omitted, omitted_directories,
-                       inherited_label_paths, original_attrs, *, replace,
-                       measure_bytes, before_commit):
-    """Move the arrays out, rewrite metadata, validate, then commit the journal.
-
-    Returns the store size after pruning (None unless ``measure_bytes``).
-    Raises on any failure before the commit; the caller rolls back.
-    """
-    rollback.mkdir()
-    journal = begin(root, rollback, top_level_omitted, original_attrs)
-    sync_directory(root.parent)
-    _move_arrays_to_rollback(root, rollback, top_level_omitted, replace)
-    _write_shallow_metadata(root, image_nodes, manifest)
-    _validate_staged_result(root, manifest, label_nodes, omitted_directories,
-                            inherited_label_paths)
-    bytes_after = _tree_size(root) if measure_bytes else None
-    if before_commit is not None:
-        before_commit(manifest)
-    commit(journal)
-    logger.info(f"Committed prune of {root}")
-    return bytes_after
-
-
-def _move_arrays_to_rollback(root, rollback, directories, replace):
+def _move_arrays_to_rollback(root, rollback, directories, move):
     """Move each omitted array directory into the rollback folder, keeping its relative path."""
     for directory in directories:
         if not directory.is_dir():
@@ -379,7 +378,7 @@ def _move_arrays_to_rollback(root, rollback, directories, replace):
             )
         target = rollback / directory.relative_to(root)
         target.parent.mkdir(parents=True, exist_ok=True)
-        replace(directory, target)
+        move(directory, target)
         sync_directory(directory.parent)
         sync_directory(target.parent)
 
@@ -399,17 +398,17 @@ def _write_shallow_metadata(root, image_nodes, manifest):
     write_json(root / SHALLOW_COLLECTION_MANIFEST, manifest.to_dict())
 
 
-def _validate_staged_result(root, manifest, label_nodes, omitted_directories,
-                            inherited_label_paths):
+def _validate_staged_result(plan):
     """Check the staged store: the manifest round-trips, labels and datasets are as planned."""
+    root = plan.root
     written = json.loads(
         (root / SHALLOW_COLLECTION_MANIFEST).read_text(encoding="utf-8")
     )
-    if ShallowManifest.from_dict(written) != manifest:
+    if ShallowManifest.from_dict(written) != plan.manifest:
         raise PixelIdentityError("Shallow manifest changed")
-    for label in label_nodes:
+    for label in plan.label_nodes:
         label_dir = node_directory(root, label.node_path)
-        if label.node_path in inherited_label_paths:
+        if label.node_path in plan.inherited_label_paths:
             if label_dir.exists():
                 raise PixelIdentityError(
                     f"Staged shallow result retained inherited label "
@@ -419,8 +418,61 @@ def _validate_staged_result(root, manifest, label_nodes, omitted_directories,
             raise PixelIdentityError(
                 f"Staged shallow result lost label node {label.node_path}"
             )
-    for dataset in omitted_directories:
+    for dataset in plan.omitted_directories:
         if dataset.exists():
             raise PixelIdentityError(
                 f"Shallow result retained image dataset {dataset}"
             )
+
+
+def _declared_image_dataset_directories(
+    root: Path,
+    image_node_path: str,
+) -> tuple[Path, ...]:
+    image_node = node_directory(root, image_node_path)
+    attrs = read_attrs(image_node)
+    multiscales = attrs.get("multiscales")
+    if not isinstance(multiscales, list) or not multiscales:
+        raise PixelIdentityError(
+            f"NGFF image node has no multiscales metadata: {image_node_path}"
+        )
+    directories = []
+    for multiscale in multiscales:
+        datasets = (
+            multiscale.get("datasets")
+            if isinstance(multiscale, dict)
+            else None
+        )
+        if not isinstance(datasets, list) or not datasets:
+            raise PixelIdentityError(
+                f"NGFF multiscales has no datasets: {image_node_path}"
+            )
+        for dataset in datasets:
+            dataset_path = (
+                dataset.get("path") if isinstance(dataset, dict) else None
+            )
+            if not isinstance(dataset_path, str):
+                raise PixelIdentityError(
+                    f"NGFF dataset path is missing: {image_node_path}"
+                )
+            dataset_path = safe_node_path(dataset_path)
+            directory = node_directory(
+                root,
+                join_node_path(image_node_path, dataset_path),
+            )
+            try:
+                directory.relative_to(root)
+            except ValueError as exc:
+                raise PixelIdentityError(
+                    f"NGFF dataset escapes its store: {dataset_path}"
+                ) from exc
+            directories.append(directory)
+    return tuple(dict.fromkeys(directories))
+
+
+def _tree_size(root: Path) -> int:
+    return sum(
+        path.stat().st_size
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
