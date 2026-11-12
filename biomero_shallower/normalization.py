@@ -74,7 +74,7 @@ def normalize_returned_zarr(
     decision: ReturnedZarrDecision,
     workflow_id: UUID | str,
     *,
-    move=os.replace,
+    move=None,
     replace=None,
     measure_bytes: bool = False,
     before_commit=None,
@@ -93,12 +93,11 @@ def normalize_returned_zarr(
     filesystem.  ``measure_bytes`` is intended for diagnostics and benchmarks,
     not the interactive import path.
 
-    ``move`` renames one directory (``os.replace`` by default; tests inject
+    ``move`` renames one directory (default ``os.replace``; tests inject
     failures). ``replace`` is the deprecated former name of ``move``, still
     accepted for existing callers.
     """
-    if replace is not None:
-        move = replace
+    move = replace or move or os.replace
     plan = _plan_prune(decision, workflow_id)
     bytes_before = _tree_size(plan.root) if measure_bytes else None
     logger.info(f"Pruning {plan.root}: moving {len(plan.moved_directories)} "

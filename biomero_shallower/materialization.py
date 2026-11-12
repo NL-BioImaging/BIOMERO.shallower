@@ -1,7 +1,12 @@
-"""TODO."""
+"""Rebuild a conventional image or Plate Zarr from a shallow reference.
 
+The managed canonical pixels and the managed labels are copied into a sibling
+staging directory, which is renamed into place only after its label inventory
+matches the shallow collection. The managed sources are never modified.
+"""
+
+from contextlib import contextmanager
 from dataclasses import dataclass
-import json
 import logging
 import os
 from pathlib import Path, PurePosixPath
@@ -10,26 +15,24 @@ from uuid import uuid4
 
 from biomero_schema.zarr import (
     ManagedZarrNode,
-    SHALLOW_COLLECTION_MANIFEST,
     ShallowManifest,
     ShallowPlateReference,
     ShallowZarrReference,
     ZarrLabelComponent,
 )
 
-from .pixel_identity import (
-    PixelIdentityError,
-)
-from .ngff import (
-    group_metadata,
-)
-
-
-from .ngff import join_node_path, node_directory, write_labels_group
 from .discovery import discover_ngff_nodes
-from .registration import resolve_managed_source_path
+from .ngff import group_metadata, join_node_path, node_directory, write_labels_group
+from .pixel_identity import PixelIdentityError
+from .registration import read_collection_manifest, resolve_managed_source_path
+
+__all__ = ["MaterializedShallowResult", "materialize_shallow_zarr"]
 
 logger = logging.getLogger(__name__)
+
+# Written by the importer into canonical stores; never copied into a materialized Zarr.
+CANONICAL_MARKER_NAME = ".biomero-canonical.json"
+LABELS_GROUP_NAME = "labels"
 
 
 @dataclass(frozen=True)
@@ -46,39 +49,104 @@ def materialize_shallow_zarr(
     destination: str | Path,
     storage_roots: dict[str, Path],
     *,
-    replace=os.replace,
+    move=None,
+    replace=None,
 ) -> MaterializedShallowResult:
     """Build a conventional image or Plate Zarr from a shallow reference.
 
     The managed source and collections are read-only. The destination is
     assembled as a sibling staging directory and atomically renamed only after
     every declared label has been copied and its stable source recorded.
-    """
-    if isinstance(reference, ShallowPlateReference):
-        return _materialize_shallow_plate_zarr(
-            reference,
-            destination,
-            storage_roots,
-            replace=replace,
-        )
 
+    ``move`` renames the staging directory into place (default ``os.replace``;
+    tests inject failures). ``replace`` is the deprecated former name
+    of ``move``, still accepted for existing callers.
+    """
+    move = replace or move or os.replace
     destination = Path(destination)
     if destination.exists():
         raise PixelIdentityError(
             f"Shallow materialization destination already exists: {destination}"
         )
     collection_root = resolve_managed_source_path(reference, storage_roots)
+    manifest = read_collection_manifest(collection_root)
+    if isinstance(reference, ShallowPlateReference):
+        return _materialize_plate(reference, destination, storage_roots, move,
+                                  collection_root, manifest)
+    return _materialize_image(reference, destination, storage_roots, move,
+                              collection_root, manifest)
+
+
+@contextmanager
+def _staging_directory(destination: Path):
+    """Yield a sibling staging path and delete whatever is left of it afterwards."""
+    staging = destination.with_name(
+        f".{destination.name}.biomero-materialize-{uuid4().hex}"
+    )
+    try:
+        yield staging
+    finally:
+        if staging.exists():
+            logger.debug(f"Removing materialization staging {staging}")
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def _skip_labels(image_directories: set[Path]):
+    """Return a ``shutil.copytree`` ignore function that drops markers and image labels.
+
+    Labels are copied separately from their managed sources, so the canonical
+    image's own ``labels`` folder must not come along.
+    """
+    def ignore(directory, names):
+        ignored = {CANONICAL_MARKER_NAME}.intersection(names)
+        if Path(directory) in image_directories and LABELS_GROUP_NAME in names:
+            ignored.add(LABELS_GROUP_NAME)
+        return ignored
+    return ignore
+
+
+def _label_source(component, reference, collection_root, storage_roots):
+    """Return ``(physical label path, managed source)`` of one label component.
+
+    A label without its own source lives in this collection; an inherited one
+    lives in the canonical store it names.
+    """
+    if component.source is None:
+        managed_source = ManagedZarrNode(
+            storage_root=reference.storage_root,
+            relative_path=reference.relative_path,
+            node_path=component.logical_node_path,
+        )
+        return node_directory(collection_root, component.logical_node_path), managed_source
+    physical_root = resolve_managed_source_path(component.source, storage_roots)
+    return (node_directory(physical_root, component.source.node_path),
+            component.source)
+
+
+def _require_label_present(physical_path: Path, description: str) -> None:
+    if not physical_path.is_dir():
+        raise PixelIdentityError(
+            f"Managed shallow {description} is unavailable: {physical_path}"
+        )
+
+
+def _require_label_inventory(staging, expected_paths, description):
+    """Check the staged store holds exactly the labels the collection declares."""
+    discovered_paths = {
+        node.node_path for node in discover_ngff_nodes(staging)
+        if node.role == "label"
+    }
+    if discovered_paths != expected_paths:
+        raise PixelIdentityError(
+            f"Materialized {description}inventory differs from shallow collection"
+        )
+
+
+def _materialize_image(reference, destination, storage_roots, move,
+                       collection_root, manifest):
+    """Copy one canonical image and its labels into a conventional Zarr."""
     logger.info(f"Materializing image {reference.image_node_path} "
                 f"from {collection_root} to {destination}")
-    manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
-    try:
-        manifest = ShallowManifest.from_dict(json.loads(
-            manifest_path.read_text(encoding="utf-8")
-        ))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise PixelIdentityError(
-            f"Invalid shallow collection manifest: {manifest_path}"
-        ) from exc
     matches = [
         image for image in manifest.collection.images
         if image.node_path == reference.image_node_path
@@ -98,72 +166,37 @@ def materialize_shallow_zarr(
         raise PixelIdentityError(
             "Shallow reference no longer matches its collection manifest"
         )
-    canonical_root = resolve_managed_source_path(
-        image_binding.source, storage_roots
-    )
-    canonical_image = node_directory(
-        canonical_root, image_binding.source.node_path
-    )
+    canonical_root = resolve_managed_source_path(image_binding.source, storage_roots)
+    canonical_image = node_directory(canonical_root, image_binding.source.node_path)
     if not canonical_image.is_dir():
         raise PixelIdentityError(
             f"Shallow source image node is unavailable: {canonical_image}"
         )
-    components = tuple(binding.component for binding in label_bindings)
-
-    token = uuid4().hex
-    staging = destination.with_name(
-        f".{destination.name}.biomero-materialize-{token}"
-    )
-    source_labels = canonical_image / "labels"
-
-    def ignore(directory, names):
-        current = Path(directory)
-        ignored = {".biomero-canonical.json"}.intersection(names)
-        if current == canonical_image and source_labels.name in names:
-            ignored.add(source_labels.name)
-        return ignored
+    labels_prefix = PurePosixPath(join_node_path(image.node_path, LABELS_GROUP_NAME))
 
     managed_labels = []
-    try:
-        shutil.copytree(canonical_image, staging, symlinks=True, ignore=ignore)
-        labels_root = staging / "labels"
+    with _staging_directory(destination) as staging:
+        shutil.copytree(canonical_image, staging, symlinks=True,
+                        ignore=_skip_labels({canonical_image}))
+        labels_root = staging / LABELS_GROUP_NAME
         labels_root.mkdir(parents=True, exist_ok=False)
         label_names = []
-        for component in components:
-            prefix = PurePosixPath(
-                join_node_path(image.node_path, "labels")
-            )
+        for binding in label_bindings:
+            component = binding.component
             logical = PurePosixPath(component.logical_node_path)
             try:
-                label_name = logical.relative_to(prefix).as_posix()
+                label_name = logical.relative_to(labels_prefix).as_posix()
             except ValueError as exc:
                 raise PixelIdentityError(
                     "Label paths must be nested below their image labels/"
                 ) from exc
             label_names.append(label_name)
-            if component.source is None:
-                physical_root = collection_root
-                physical_node = component.logical_node_path
-                managed_source = ManagedZarrNode(
-                    storage_root=reference.storage_root,
-                    relative_path=reference.relative_path,
-                    node_path=component.logical_node_path,
-                )
-            else:
-                physical_root = resolve_managed_source_path(
-                    component.source,
-                    storage_roots,
-                )
-                physical_node = component.source.node_path
-                managed_source = component.source
-            physical_path = node_directory(physical_root, physical_node)
-            if not physical_path.is_dir():
-                raise PixelIdentityError(
-                    f"Managed shallow label is unavailable: {physical_path}"
-                )
-            target_node = join_node_path("labels", label_name)
-            target = node_directory(staging, target_node)
-            shutil.copytree(physical_path, target, symlinks=True)
+            physical_path, managed_source = _label_source(
+                component, reference, collection_root, storage_roots)
+            _require_label_present(physical_path, "label")
+            target_node = join_node_path(LABELS_GROUP_NAME, label_name)
+            shutil.copytree(physical_path, node_directory(staging, target_node),
+                            symlinks=True)
             managed_labels.append(ZarrLabelComponent(
                 logical_node_path=target_node,
                 pixel_identity=component.pixel_identity.model_copy(update={
@@ -172,26 +205,13 @@ def materialize_shallow_zarr(
                 source=managed_source,
             ))
         write_labels_group(labels_root, label_names, group_metadata(staging)[3])
-        discovered_paths = {
-            node.node_path for node in discover_ngff_nodes(staging)
-            if node.role == "label"
-        }
         expected_paths = {
-            join_node_path(
-                "labels",
-                PurePosixPath(path).relative_to(prefix).as_posix(),
-            )
+            join_node_path(LABELS_GROUP_NAME,
+                           PurePosixPath(path).relative_to(labels_prefix).as_posix())
             for path in label_paths
         }
-        if discovered_paths != expected_paths:
-            raise PixelIdentityError(
-                "Materialized label inventory differs from shallow collection"
-            )
-        replace(staging, destination)
-    finally:
-        if staging.exists():
-            logger.debug(f"Removing materialization staging {staging}")
-            shutil.rmtree(staging, ignore_errors=True)
+        _require_label_inventory(staging, expected_paths, "label ")
+        move(staging, destination)
 
     logger.info(f"Materialized {destination} with {len(managed_labels)} labels")
     return MaterializedShallowResult(
@@ -201,30 +221,10 @@ def materialize_shallow_zarr(
     )
 
 
-def _materialize_shallow_plate_zarr(
-    reference: ShallowPlateReference,
-    destination: str | Path,
-    storage_roots: dict[str, Path],
-    *,
-    replace=os.replace,
-) -> MaterializedShallowResult:
-    """Reconstruct one conventional Plate from its canonical pixels and labels."""
-    destination = Path(destination)
-    if destination.exists():
-        raise PixelIdentityError(
-            f"Shallow materialization destination already exists: {destination}"
-        )
-    collection_root = resolve_managed_source_path(reference, storage_roots)
+def _materialize_plate(reference, destination, storage_roots, move,
+                       collection_root, manifest):
+    """Copy a canonical Plate and every field's labels into a conventional Zarr."""
     logger.info(f"Materializing Plate from {collection_root} to {destination}")
-    manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
-    try:
-        manifest = ShallowManifest.from_dict(json.loads(
-            manifest_path.read_text(encoding="utf-8")
-        ))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise PixelIdentityError(
-            f"Invalid shallow collection manifest: {manifest_path}"
-        ) from exc
     try:
         expected_reference = ShallowPlateReference.from_manifest(
             manifest,
@@ -254,94 +254,40 @@ def _materialize_shallow_plate_zarr(
                 f"Shallow Plate source image node is unavailable: {directory}"
             )
 
-    token = uuid4().hex
-    staging = destination.with_name(
-        f".{destination.name}.biomero-materialize-{token}"
-    )
-    def ignore(directory, names):
-        current = Path(directory)
-        ignored = {".biomero-canonical.json"}.intersection(names)
-        if current in canonical_image_directories and "labels" in names:
-            ignored.add("labels")
-        return ignored
-
     managed_labels = []
     expected_label_paths = set()
-    try:
-        shutil.copytree(canonical_root, staging, symlinks=True, ignore=ignore)
+    with _staging_directory(destination) as staging:
+        shutil.copytree(canonical_root, staging, symlinks=True,
+                        ignore=_skip_labels(canonical_image_directories))
         for image in manifest.collection.images:
             components = tuple(
                 binding.component
                 for binding in manifest.label_bindings_for_image(image.node_id)
             )
-
             labels_root = node_directory(
-                staging,
-                join_node_path(image.node_path, "labels"),
-            )
+                staging, join_node_path(image.node_path, LABELS_GROUP_NAME))
             labels_root.mkdir()
+            labels_prefix = PurePosixPath(
+                join_node_path(image.node_path, LABELS_GROUP_NAME))
             label_names = []
-            prefix = PurePosixPath(
-                join_node_path(image.node_path, "labels")
-            )
-            for component in sorted(
-                components, key=lambda item: item.logical_node_path
-            ):
-                logical = PurePosixPath(component.logical_node_path)
-                try:
-                    relative = logical.relative_to(prefix)
-                except ValueError as exc:
-                    raise PixelIdentityError(
-                        "Plate label paths must be nested below their image labels/"
-                    ) from exc
-                if len(relative.parts) != 1:
-                    raise PixelIdentityError(
-                        "Plate labels must have one name below the image labels/ group"
-                    )
+            for component in sorted(components, key=lambda item: item.logical_node_path):
+                relative = _plate_label_name(component, labels_prefix)
                 label_names.append(relative.name)
                 expected_label_paths.add(component.logical_node_path)
-                if component.source is None:
-                    physical_root = collection_root
-                    physical_node = component.logical_node_path
-                    managed_source = ManagedZarrNode(
-                        storage_root=reference.storage_root,
-                        relative_path=reference.relative_path,
-                        node_path=component.logical_node_path,
-                    )
-                else:
-                    physical_root = resolve_managed_source_path(
-                        component.source,
-                        storage_roots,
-                    )
-                    physical_node = component.source.node_path
-                    managed_source = component.source
-                physical_path = node_directory(physical_root, physical_node)
-                if not physical_path.is_dir():
-                    raise PixelIdentityError(
-                        f"Managed shallow Plate label is unavailable: {physical_path}"
-                    )
-                target = node_directory(staging, component.logical_node_path)
-                shutil.copytree(physical_path, target, symlinks=True)
+                physical_path, managed_source = _label_source(
+                    component, reference, collection_root, storage_roots)
+                _require_label_present(physical_path, "Plate label")
+                shutil.copytree(
+                    physical_path,
+                    node_directory(staging, component.logical_node_path),
+                    symlinks=True)
                 managed_labels.append(component.model_copy(update={
                     "source": managed_source,
                 }))
             write_labels_group(
-                labels_root, label_names, group_metadata(labels_root.parent)[3]
-            )
-
-        discovered_label_paths = {
-            node.node_path for node in discover_ngff_nodes(staging)
-            if node.role == "label"
-        }
-        if discovered_label_paths != expected_label_paths:
-            raise PixelIdentityError(
-                "Materialized Plate label inventory differs from shallow collection"
-            )
-        replace(staging, destination)
-    finally:
-        if staging.exists():
-            logger.debug(f"Removing materialization staging {staging}")
-            shutil.rmtree(staging, ignore_errors=True)
+                labels_root, label_names, group_metadata(labels_root.parent)[3])
+        _require_label_inventory(staging, expected_label_paths, "Plate label ")
+        move(staging, destination)
 
     logger.info(f"Materialized Plate {destination} with {len(managed_labels)} labels")
     return MaterializedShallowResult(
@@ -349,3 +295,19 @@ def _materialize_shallow_plate_zarr(
         manifest=manifest,
         labels=tuple(managed_labels),
     )
+
+
+def _plate_label_name(component, labels_prefix: PurePosixPath) -> PurePosixPath:
+    """Return a Plate label's single name below its image's labels/ group, or raise."""
+    logical = PurePosixPath(component.logical_node_path)
+    try:
+        relative = logical.relative_to(labels_prefix)
+    except ValueError as exc:
+        raise PixelIdentityError(
+            "Plate label paths must be nested below their image labels/"
+        ) from exc
+    if len(relative.parts) != 1:
+        raise PixelIdentityError(
+            "Plate labels must have one name below the image labels/ group"
+        )
+    return relative
