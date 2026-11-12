@@ -209,7 +209,7 @@ def normalize(root, manifest, *, contract=1, identity_workers=1,
                     write_json(root / SHALLOW_OPERATION_REPORT, report.to_dict())
             except Exception as exc:
                 # Recovery must succeed before a full-result fallback is safe.
-                logger.warning("Normalization of %s failed: %s", root, exc)
+                logger.warning("Normalization of %s failed: %s", root, exc, exc_info=True)
                 recover(root)
                 if (root / SHALLOW_OPERATION_REPORT).exists():
                     logger.info("Normalization of %s had committed before the failure", root)

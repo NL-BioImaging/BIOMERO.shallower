@@ -118,6 +118,11 @@ the consumer for cache persistence, including failed result matches.
 docker run --rm --network none cellularimagingcf/biomero-shallower:0.1.0 health
 ```
 
+Progress and decisions are logged at INFO to stderr by the command line
+tool (it configures logging only if the caller has not); standard output
+remains the single JSON document. Callers read the report file, not the
+log, for results.
+
 The image runs as UID/GID `10001:10001`. Bind the returned result directory
 writable and the canonical-input manifest read-only. The helper does not need
 access to transferred input copies or original managed canonical stores. Writable results require

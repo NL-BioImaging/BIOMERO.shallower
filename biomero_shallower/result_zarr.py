@@ -54,6 +54,7 @@ from .ngff import (
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True)
 class NgffNode:
     """One explicitly discovered image or label node in a returned store."""
@@ -1204,7 +1205,7 @@ def normalize_returned_zarr(
         write_json(rollback / "journal.json", journal)
         logger.info("Committed prune of %s", root)
     except Exception:
-        logger.warning("Prune of %s failed; rolling back", root, exc_info=True)
+        logger.info("Prune of %s failed; rolling back", root)
         # Restore metadata before the arrays so readers never see valid
         # multiscales pointing at only a partially restored pyramid.
         recover(root)
