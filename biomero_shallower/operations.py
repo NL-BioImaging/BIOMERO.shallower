@@ -15,11 +15,24 @@ from biomero_schema.zarr import SHALLOW_COLLECTION_MANIFEST, ShallowManifest
 from . import __version__
 from .adapters import ADAPTERS, FORMAT_ADAPTERS
 from .ngff import PixelIdentityError, group_metadata, read_attrs
-from .pixel_identity import pixel_identities_match
 from .evaluation import (
-    OUTCOME_KEEP_FULL, REASON_NORMALIZATION_FAILED, REASON_UNSUPPORTED_CANONICAL_PROFILE,
+    BASIS_PIXEL_COMPARISON, BASIS_WORKFLOW_SETTING, OUTCOME_KEEP_FULL,
+    REASON_NORMALIZATION_FAILED, REASON_UNSUPPORTED_CANONICAL_PROFILE,
 )
-from .transaction import recover, write_json
+from .filesystem import write_json
+from .pixel_identity import pixel_identities_match
+from .transaction import recover
+
+__all__ = [
+    "ADAPTERS",
+    "DEFAULT_CONTRACT",
+    "KEEP_FULL_POLICY",
+    "RESULT_KEPT_FULL",
+    "RESULT_NORMALIZED",
+    "locked",
+    "normalize",
+    "validate_report",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +45,20 @@ RESULT_KEPT_FULL = "kept-full"
 REPORT_SCHEMA = 2
 INPUT_CONTRACT = 1
 OUTPUT_CONTRACT = 2
+LOCK_INFIX = ".biomero-lock"
 
 
 @contextmanager
 def locked(root):
-    # Kernel locks release automatically after process death, unlike mkdir locks.
-    path = root.with_name(f".{root.name}.biomero-lock")
+    """Hold an exclusive lock on the store for the duration of the block.
+
+    The lock file sits beside the store. Acquisition is non-blocking: a second
+    process fails at once instead of waiting. Kernel locks (``flock`` on POSIX:
+    an advisory whole-file lock; ``msvcrt.locking`` on Windows) release
+    automatically after process death, unlike mkdir locks. Writable result
+    storage must therefore support POSIX locks (see docs/index.md).
+    """
+    path = root.with_name(f".{root.name}{LOCK_INFIX}")
     with path.open("a+b") as stream:
         if os.name == "nt":
             import msvcrt
@@ -60,15 +81,17 @@ def locked(root):
 
 
 def validate_report(root, manifest, *, image=None, tool_version=None, artifact=None):
+    """Check a committed operation report against its run and the stored result.
+
+    Verifies the canonical snapshot, artifact, helper image and version, and,
+    for a normalized result, that the stored shallow manifest, image metadata
+    and label inventory match the report. Returns the report; raises ValueError
+    on any mismatch. Cheap: no pixels are read.
+    """
     root = Path(root)
     report = ShallowOperationReport.from_dict(json.loads(
         (root / SHALLOW_OPERATION_REPORT).read_text(encoding="utf-8")))
-    if report.canonical_inputs != manifest or report.artifact != (artifact or root.name):
-        raise ValueError("Report canonical snapshot or artifact mismatch")
-    if image is not None and report.image != image:
-        raise ValueError("Unexpected helper image")
-    if tool_version is not None and report.tool_version != tool_version:
-        raise ValueError("Unexpected helper version")
+    _check_report_provenance(report, manifest, root, image, tool_version, artifact)
     if report.manifest is None:
         return report
     shallow_manifest = ShallowManifest.from_dict(json.loads(
@@ -77,59 +100,98 @@ def validate_report(root, manifest, *, image=None, tool_version=None, artifact=N
         raise ValueError("Manifest does not match verified report")
     if report.adapter != shallow_manifest.interchange_profile:
         raise ValueError("Report adapter and manifest profile differ")
-    matches = []
+    authoritative_input = _find_authoritative_input(manifest, shallow_manifest)
+    inherited_labels = _labels_of_input(authoritative_input)
+    for image_node in shallow_manifest.collection.images:
+        _check_image_binding(shallow_manifest.image_binding(image_node.node_id), manifest)
+        _check_shallow_image_structure(root, image_node)
+        label_bindings = shallow_manifest.label_bindings_for_image(image_node.node_id)
+        _check_label_inventory(shallow_manifest, image_node, label_bindings)
+        _check_label_bindings(root, label_bindings, inherited_labels)
+    return report
+
+
+def _check_report_provenance(report, manifest, root, image, tool_version, artifact):
+    """Check the report belongs to this snapshot, artifact, helper image and version."""
+    if report.canonical_inputs != manifest or report.artifact != (artifact or root.name):
+        raise ValueError("Report canonical snapshot or artifact mismatch")
+    if image is not None and report.image != image:
+        raise ValueError("Unexpected helper image")
+    if tool_version is not None and report.tool_version != tool_version:
+        raise ValueError("Unexpected helper version")
+
+
+def _find_authoritative_input(manifest, shallow_manifest):
+    """Return the one canonical input whose sources the shallow manifest binds to."""
+    shallow_image_paths = {image.node_path for image in shallow_manifest.collection.images}
+    candidates = []
     for item in manifest.inputs:
         sources = ([image.source for image in item.plate_source.images]
                    if item.plate_source else [item.source])
-        if {source.node_path for source in sources} == {
-                image.node_path
-                for image in shallow_manifest.collection.images
-        } and all(
-                any(_same_source_binding(binding.source, source) for source in sources)
-                for binding in shallow_manifest.bindings.images):
-            matches.append(item)
-    if len(matches) != 1:
+        covers_same_images = {source.node_path for source in sources} == shallow_image_paths
+        binds_to_sources = all(
+            any(_same_source_binding(binding.source, source) for source in sources)
+            for binding in shallow_manifest.bindings.images)
+        if covers_same_images and binds_to_sources:
+            candidates.append(item)
+    if len(candidates) != 1:
         raise ValueError("No unique authoritative canonical source")
-    canonical = matches[0]
-    labels = (tuple(label for image in canonical.plate_source.images
-                    for label in image.labels) if canonical.plate_source
-              else canonical.labels)
-    for image_node in shallow_manifest.collection.images:
-        image_binding = shallow_manifest.image_binding(image_node.node_id)
-        if (image_binding.decision_basis == "pixel-comparison" and not pixel_identities_match(
-                image_binding.returned_pixel_identity,
-                image_binding.source.pixel_identity)):
-            raise ValueError("Returned and canonical image identities differ")
-        if image_binding.decision_basis == "workflow-setting" and not manifest.original_pixels_not_required:
-            raise ValueError("Workflow shortcut was not selected for this run")
-        attrs = read_attrs(root / image_node.node_path)
-        if ("multiscales" in attrs
-                or attrs.get("biomero", {}).get("manifest")
-                != SHALLOW_COLLECTION_MANIFEST):
-            raise ValueError("Invalid shallow image structure")
-        label_nodes = tuple(
-            label for label in shallow_manifest.collection.labels
-            if label.source_image_id == image_node.node_id
-        )
-        label_bindings = shallow_manifest.label_bindings_for_image(
-            image_node.node_id
-        )
-        if {label.node_path for label in label_nodes} != {
-                binding.component.logical_node_path
-                for binding in label_bindings}:
-            raise ValueError("Incomplete label inventory")
-        for binding in label_bindings:
-            component = binding.component
-            path = root / component.logical_node_path
-            if component.source is not None:
-                if not any(label.source == component.source
-                           and label.logical_node_path == component.logical_node_path
-                           and pixel_identities_match(label.pixel_identity, component.pixel_identity)
-                           for label in labels) or path.exists():
-                    raise ValueError("Invalid inherited label reference")
-            elif not path.is_dir():
-                raise ValueError("Missing retained label")
-    return report
+    return candidates[0]
+
+
+def _labels_of_input(canonical_input):
+    """All labels the canonical input records, across a Plate's images."""
+    if canonical_input.plate_source:
+        return tuple(label for image in canonical_input.plate_source.images
+                     for label in image.labels)
+    return canonical_input.labels
+
+
+def _check_image_binding(image_binding, manifest):
+    """Check the evidence that justified replacing this image's pixels still holds."""
+    if (image_binding.decision_basis == BASIS_PIXEL_COMPARISON
+            and not pixel_identities_match(image_binding.returned_pixel_identity,
+                                           image_binding.source.pixel_identity)):
+        raise ValueError("Returned and canonical image identities differ")
+    if (image_binding.decision_basis == BASIS_WORKFLOW_SETTING
+            and not manifest.original_pixels_not_required):
+        raise ValueError("Workflow shortcut was not selected for this run")
+
+
+def _check_shallow_image_structure(root, image_node):
+    """Check the image node points at the shallow manifest and lost its multiscales."""
+    attrs = read_attrs(root / image_node.node_path)
+    if ("multiscales" in attrs
+            or attrs.get("biomero", {}).get("manifest") != SHALLOW_COLLECTION_MANIFEST):
+        raise ValueError("Invalid shallow image structure")
+
+
+def _check_label_inventory(shallow_manifest, image_node, label_bindings):
+    """Check the image's declared labels are exactly the labels it has bindings for."""
+    declared_paths = {
+        label.node_path for label in shallow_manifest.collection.labels
+        if label.source_image_id == image_node.node_id
+    }
+    bound_paths = {binding.component.logical_node_path for binding in label_bindings}
+    if declared_paths != bound_paths:
+        raise ValueError("Incomplete label inventory")
+
+
+def _check_label_bindings(root, label_bindings, inherited_labels):
+    """Check each label: inherited ones are absent and match the input; the rest are kept."""
+    for binding in label_bindings:
+        component = binding.component
+        path = root / component.logical_node_path
+        if component.source is not None:
+            matches_input_label = any(
+                label.source == component.source
+                and label.logical_node_path == component.logical_node_path
+                and pixel_identities_match(label.pixel_identity, component.pixel_identity)
+                for label in inherited_labels)
+            if not matches_input_label or path.exists():
+                raise ValueError("Invalid inherited label reference")
+        elif not path.is_dir():
+            raise ValueError("Missing retained label")
 
 
 def _same_source_binding(left, right):
