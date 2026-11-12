@@ -50,6 +50,8 @@ def test_recovery_is_logged(tmp_path, caplog):
     ('unsupported-canonical-profile', True),
     ('identity-unavailable: boom', True),
     ('label-identity-unavailable: boom', True),
+    ('no-canonical-input-snapshot', True),
+    ('ambiguous-input-identity', True),
     ('pixels-changed', False),
     ('no-input-identity-match', False),
 ])

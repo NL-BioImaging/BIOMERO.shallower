@@ -152,12 +152,22 @@ def test_prune_committed_from_journal_and_manifest(tmp_path, journal_committed, 
 
 
 @pytest.mark.parametrize('reason, failure', [
-    ('normalization-failed: boom', True),
+    ('no-canonical-input-snapshot', True),
+    ('invalid-transfer-input-marker', True),
+    ('untrusted-transfer-input-marker', True),
+    ('ambiguous-transfer-artifact', True),
+    ('ambiguous-input-identity', True),
+    ('unsupported-canonical-profile', True),
     ('unsupported-ngff: mixed', True),
     ('identity-unavailable: boom', True),
     ('label-identity-unavailable: boom', True),
+    ('normalization-failed: boom', True),
+    ('no-image-nodes', False),
+    ('image-layout-mismatch', False),
+    ('image-semantics-mismatch', False),
     ('pixels-changed', False),
     ('no-input-identity-match', False),
+    ('input-image-unchanged', False),
 ])
 def test_is_failure_reason(reason, failure):
     assert is_failure_reason(reason) is failure

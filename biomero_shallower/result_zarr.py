@@ -62,16 +62,40 @@ logger = logging.getLogger(__name__)
 OUTCOME_ELIGIBLE = "eligible"
 OUTCOME_KEEP_FULL = "keep-full"
 OUTCOME_SKIP_PASSTHROUGH = "skip-passthrough"
-# Keep-full reasons that signal a failure or an unsupported layout, not changed
-# pixels. A reason may carry a ": <detail>" suffix.
+# Keep-full reasons that signal a failure, an unsupported layout or an
+# untrustworthy input. A reason may carry a ": <detail>" suffix.
+REASON_NO_CANONICAL_INPUT_SNAPSHOT = "no-canonical-input-snapshot"
+REASON_INVALID_TRANSFER_INPUT_MARKER = "invalid-transfer-input-marker"
+REASON_UNTRUSTED_TRANSFER_INPUT_MARKER = "untrusted-transfer-input-marker"
+REASON_AMBIGUOUS_TRANSFER_ARTIFACT = "ambiguous-transfer-artifact"
+REASON_AMBIGUOUS_INPUT_IDENTITY = "ambiguous-input-identity"
+REASON_UNSUPPORTED_CANONICAL_PROFILE = "unsupported-canonical-profile"
+REASON_UNSUPPORTED_NGFF = "unsupported-ngff"
+REASON_IDENTITY_UNAVAILABLE = "identity-unavailable"
+REASON_LABEL_IDENTITY_UNAVAILABLE = "label-identity-unavailable"
+REASON_NORMALIZATION_FAILED = "normalization-failed"
+# Keep-full reasons that are ordinary outcomes: nothing to reuse or no match.
+REASON_NO_IMAGE_NODES = "no-image-nodes"
+REASON_IMAGE_LAYOUT_MISMATCH = "image-layout-mismatch"
+REASON_IMAGE_SEMANTICS_MISMATCH = "image-semantics-mismatch"
+REASON_PIXELS_CHANGED = "pixels-changed"
+REASON_NO_INPUT_IDENTITY_MATCH = "no-input-identity-match"
 FAILURE_REASON_PREFIXES = (
-    "normalization-failed", "unsupported-", "identity-unavailable",
-    "label-identity-unavailable",
+    REASON_NO_CANONICAL_INPUT_SNAPSHOT,
+    REASON_INVALID_TRANSFER_INPUT_MARKER,
+    REASON_UNTRUSTED_TRANSFER_INPUT_MARKER,
+    REASON_AMBIGUOUS_TRANSFER_ARTIFACT,
+    REASON_AMBIGUOUS_INPUT_IDENTITY,
+    REASON_UNSUPPORTED_CANONICAL_PROFILE,
+    REASON_UNSUPPORTED_NGFF,
+    REASON_IDENTITY_UNAVAILABLE,
+    REASON_LABEL_IDENTITY_UNAVAILABLE,
+    REASON_NORMALIZATION_FAILED,
 )
 
 
 def is_failure_reason(reason: str) -> bool:
-    """Whether a keep-full reason reports a failure or unsupported layout.
+    """Whether a keep-full reason reports a failure, unsupported layout or untrusted input.
 
     Reasons such as ``pixels-changed`` or ``no-input-identity-match`` are
     expected outcomes and return False.
@@ -1382,9 +1406,9 @@ def _read_transfer_input_marker(root: Path, canonical_inputs: CanonicalInputMani
             marker_path.read_text(encoding="utf-8")
         ))
     except (OSError, json.JSONDecodeError, ValueError):
-        return None, "invalid-transfer-input-marker"
+        return None, REASON_INVALID_TRANSFER_INPUT_MARKER
     if marked_input not in canonical_inputs.inputs:
-        return None, "untrusted-transfer-input-marker"
+        return None, REASON_UNTRUSTED_TRANSFER_INPUT_MARKER
     return marked_input, None
 
 
@@ -1570,7 +1594,7 @@ def evaluate_returned_zarr(
     logger.debug(f"Evaluating {root} against {input_count} canonical inputs "
                  f"with {identity_workers} identity workers")
     if canonical_inputs is None or not canonical_inputs.inputs:
-        return _keep_full(root, "no-canonical-input-snapshot")
+        return _keep_full(root, REASON_NO_CANONICAL_INPUT_SNAPSHOT)
 
     marked_input, marker_rejection = _read_transfer_input_marker(root, canonical_inputs)
     if marker_rejection is not None:
@@ -1585,7 +1609,7 @@ def evaluate_returned_zarr(
     if marked_input is not None:
         candidates = (marked_input,)
     elif len(artifact_matches) > 1:
-        return _keep_full(root, "ambiguous-transfer-artifact")
+        return _keep_full(root, REASON_AMBIGUOUS_TRANSFER_ARTIFACT)
     else:
         candidates = artifact_matches or canonical_inputs.inputs
 
@@ -1596,32 +1620,32 @@ def evaluate_returned_zarr(
         if not candidates:
             # Root metadata and the canonical snapshot suffice. Avoid opening
             # every Plate field, initializing readers or hashing any pixels.
-            return _keep_full(root, "unsupported-canonical-profile")
+            return _keep_full(root, REASON_UNSUPPORTED_CANONICAL_PROFILE)
         nodes = discover_ngff_nodes(root)
         if any(node_profile(_node_directory(root, node.node_path)) != profile
                for node in nodes):
             raise PixelIdentityError("Mixed Zarr formats in returned image/label nodes")
     except PixelIdentityError as exc:
-        return _keep_full(root, f"unsupported-ngff: {exc}")
+        return _keep_full(root, f"{REASON_UNSUPPORTED_NGFF}: {exc}")
 
     image_nodes = tuple(node for node in nodes if node.role == "image")
     label_paths = tuple(node.node_path for node in nodes if node.role == "label")
     if not image_nodes:
-        return _keep_full(root, "no-image-nodes", label_node_paths=label_paths)
+        return _keep_full(root, REASON_NO_IMAGE_NODES, label_node_paths=label_paths)
     provider = identity_provider or IsccBioIdentityProvider()
     image_paths = {node.node_path for node in image_nodes}
     candidates = tuple(item for item in candidates
                        if set(_sources_by_node_path(item)) == image_paths)
     if not candidates:
-        return _keep_full(root, "image-layout-mismatch", label_node_paths=label_paths)
+        return _keep_full(root, REASON_IMAGE_LAYOUT_MISMATCH, label_node_paths=label_paths)
     try:
         guards = {node.node_path: read_zarr_semantic_guard(root, node.node_path)
                   for node in image_nodes}
     except PixelIdentityError as exc:
-        return _keep_full(root, f"unsupported-ngff: {exc}", label_node_paths=label_paths)
+        return _keep_full(root, f"{REASON_UNSUPPORTED_NGFF}: {exc}", label_node_paths=label_paths)
     candidates = _candidates_matching_image_semantics(candidates, guards, storage_roots)
     if not candidates:
-        return _keep_full(root, "image-semantics-mismatch", label_node_paths=label_paths)
+        return _keep_full(root, REASON_IMAGE_SEMANTICS_MISMATCH, label_node_paths=label_paths)
 
     basis, selected = _select_decision_basis(
         root, canonical_inputs, candidates, label_paths, marked_input)
@@ -1639,14 +1663,14 @@ def evaluate_returned_zarr(
                 identity_workers=identity_workers, provider=provider,
                 storage_roots=storage_roots)
             matches = matching_inputs if len(matching_inputs) == 1 else ()
-            reason = ("ambiguous-input-identity" if len(matching_inputs) > 1 else
-                      "pixels-changed" if marked_input is not None or artifact_matches else
-                      "no-input-identity-match")
+            reason = (REASON_AMBIGUOUS_INPUT_IDENTITY if len(matching_inputs) > 1 else
+                      REASON_PIXELS_CHANGED if marked_input is not None or artifact_matches else
+                      REASON_NO_INPUT_IDENTITY_MATCH)
             if matches:
                 returned_identities = tuple(returned_by_candidate[matches[0].ordinal][node.node_path]
                                             for node in image_nodes)
         except (PixelIdentityError, OSError, ValueError) as exc:
-            return _keep_full(root, f"identity-unavailable: {exc}",
+            return _keep_full(root, f"{REASON_IDENTITY_UNAVAILABLE}: {exc}",
                               label_node_paths=label_paths,
                               refreshed_inputs=_changed_inputs(refreshed, canonical_inputs))
     refreshed_inputs = _changed_inputs(refreshed, canonical_inputs)
@@ -1661,7 +1685,7 @@ def evaluate_returned_zarr(
         reason = "input-image-unchanged" if len(image_nodes) == 1 else "input-plate-unchanged"
     if any(source.interchange_profile != profile
            for source in _sources_by_node_path(matched_input).values()):
-        return _keep_full(root, "unsupported-canonical-profile",
+        return _keep_full(root, REASON_UNSUPPORTED_CANONICAL_PROFILE,
                           image_identities=returned_identities,
                           label_node_paths=label_paths, refreshed_inputs=refreshed_inputs)
 
@@ -1673,7 +1697,7 @@ def evaluate_returned_zarr(
             max_workers=identity_workers,
         )
     except PixelIdentityError as exc:
-        return _keep_full(root, f"label-identity-unavailable: {exc}",
+        return _keep_full(root, f"{REASON_LABEL_IDENTITY_UNAVAILABLE}: {exc}",
                           image_identities=returned_identities,
                           label_node_paths=label_paths, refreshed_inputs=refreshed_inputs)
 

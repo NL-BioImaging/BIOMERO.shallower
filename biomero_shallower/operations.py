@@ -16,14 +16,15 @@ from . import __version__
 from .adapters import ADAPTERS, FORMAT_ADAPTERS
 from .ngff import PixelIdentityError, group_metadata, read_attrs
 from .pixel_identity import pixel_identities_match
-from .result_zarr import OUTCOME_KEEP_FULL
+from .result_zarr import (
+    OUTCOME_KEEP_FULL, REASON_NORMALIZATION_FAILED, REASON_UNSUPPORTED_CANONICAL_PROFILE,
+)
 from .transaction import recover, write_json
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTRACT = 1
 KEEP_FULL_POLICY = "keep-full"
-NORMALIZATION_FAILED = "normalization-failed"
 # Values of the operation report's ``result``.
 RESULT_NORMALIZED = "normalized"
 RESULT_KEPT_FULL = "kept-full"
@@ -220,7 +221,7 @@ def _evaluate_store(adapter, root, manifest, identity_workers, identity_provider
         logger.warning(f"Keeping {root} full: canonical profile {canonical_profile} "
                        f"differs from {adapter.profile}")
         return replace(decision, outcome=OUTCOME_KEEP_FULL,
-                       reason="unsupported-canonical-profile")
+                       reason=REASON_UNSUPPORTED_CANONICAL_PROFILE)
     return decision
 
 
@@ -282,6 +283,6 @@ def _normalize_eligible(root, manifest, decision, adapter, report_for, *,
         if (root / SHALLOW_OPERATION_REPORT).exists():
             logger.info(f"Normalization of {root} had committed before the failure")
             return validate_report(root, manifest, image=image, tool_version=__version__)
-        logger.warning(f"Keeping {root} full: {NORMALIZATION_FAILED}")
-        report = report_for(reason=f"{NORMALIZATION_FAILED}: {exc}")
+        logger.warning(f"Keeping {root} full: {REASON_NORMALIZATION_FAILED}")
+        report = report_for(reason=f"{REASON_NORMALIZATION_FAILED}: {exc}")
     return report
