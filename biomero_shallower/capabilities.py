@@ -9,6 +9,7 @@ from .adapters import ADAPTERS
 CAPABILITY_SCHEMA = 1
 RUNTIME_CONTRACTS = tuple(sorted(ADAPTERS))
 SHALLOW_MANIFEST_SCHEMAS = (2,)
+# Same repository as the `images:` entry of the publish job in .github/workflows/ci.yml.
 IMAGE_REPOSITORY = "cellularimagingcf/biomero-shallower"
 _RELEASE_VERSION = re.compile(r"(\d+\.\d+\.\d+)(?:(a|b|rc)(\d+))?")
 _PRERELEASE_LABELS = {"a": "alpha", "b": "beta", "rc": "rc"}
@@ -56,8 +57,8 @@ def require_migrations(*required: str) -> None:
 
 
 __all__ = [
-    "IMAGE_REPOSITORY",
     "CAPABILITY_SCHEMA",
+    "IMAGE_REPOSITORY",
     "MIGRATIONS",
     "RUNTIME_CONTRACTS",
     "SHALLOW_MANIFEST_SCHEMAS",

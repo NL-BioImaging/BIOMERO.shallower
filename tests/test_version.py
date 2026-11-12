@@ -81,3 +81,13 @@ def test_helper_image_rejects_unpublished_versions(version):
     with pytest.raises(ValueError, match="No published helper image"):
         helper_image(version)
 
+
+def test_helper_image_defaults_to_installed_version():
+    try:
+        expected = helper_image(__version__)
+    except ValueError:  # a development checkout has no published image
+        with pytest.raises(ValueError):
+            helper_image()
+    else:
+        assert helper_image() == expected
+
