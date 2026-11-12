@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import partial
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -50,6 +51,8 @@ from .ngff import (
     metadata_path, new_group_metadata, read_attrs,
 )
 
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class NgffNode:
@@ -460,6 +463,8 @@ def materialize_shallow_zarr(
             f"Shallow materialization destination already exists: {destination}"
         )
     collection_root = resolve_managed_source_path(reference, storage_roots)
+    logger.info("Materializing image %s from %s to %s",
+                reference.image_node_path, collection_root, destination)
     manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
     try:
         manifest = ShallowManifest.from_dict(json.loads(
@@ -580,8 +585,10 @@ def materialize_shallow_zarr(
         replace(staging, destination)
     finally:
         if staging.exists():
+            logger.debug("Removing materialization staging %s", staging)
             shutil.rmtree(staging, ignore_errors=True)
 
+    logger.info("Materialized %s with %d labels", destination, len(managed_labels))
     return MaterializedShallowResult(
         destination=destination,
         manifest=manifest,
@@ -603,6 +610,7 @@ def _materialize_shallow_plate_zarr(
             f"Shallow materialization destination already exists: {destination}"
         )
     collection_root = resolve_managed_source_path(reference, storage_roots)
+    logger.info("Materializing Plate from %s to %s", collection_root, destination)
     manifest_path = collection_root / SHALLOW_COLLECTION_MANIFEST
     try:
         manifest = ShallowManifest.from_dict(json.loads(
@@ -727,8 +735,10 @@ def _materialize_shallow_plate_zarr(
         replace(staging, destination)
     finally:
         if staging.exists():
+            logger.debug("Removing materialization staging %s", staging)
             shutil.rmtree(staging, ignore_errors=True)
 
+    logger.info("Materialized Plate %s with %d labels", destination, len(managed_labels))
     return MaterializedShallowResult(
         destination=destination,
         manifest=manifest,
@@ -1118,6 +1128,8 @@ def normalize_returned_zarr(
         )
 
     from .transaction import begin, recover, write_json, sync_directory
+    logger.info("Pruning %s: moving %d array directories to %s",
+                root, len(minimal_omitted), rollback)
     moved_directories = []
     original_attrs = {
         metadata_path(_node_directory(root, node.node_path)):
@@ -1190,7 +1202,9 @@ def normalize_returned_zarr(
             before_commit(manifest)
         journal["committed"] = True
         write_json(rollback / "journal.json", journal)
+        logger.info("Committed prune of %s", root)
     except Exception:
+        logger.warning("Prune of %s failed; rolling back", root, exc_info=True)
         # Restore metadata before the arrays so readers never see valid
         # multiscales pointing at only a partially restored pyramid.
         recover(root)
@@ -1199,6 +1213,7 @@ def normalize_returned_zarr(
     # Validation is the commit boundary. Cleanup only unlinks verified
     # duplicate pixels, so it must not attempt a rollback after a partial
     # filesystem deletion.
+    logger.info("Removing rollback folder %s", rollback)
     shutil.rmtree(rollback)
     return NormalizedShallowResult(
         store_path=root,
@@ -1243,6 +1258,10 @@ def _guard_matches_source(guard, source):
     return False
 
 
+# Keep-full reasons caused by an error or unsupported layout, not by changed pixels.
+_FALLBACK_REASONS = ("unsupported-", "identity-unavailable", "label-identity-unavailable")
+
+
 def evaluate_returned_zarr(
     zarr_root: str | Path,
     canonical_inputs: CanonicalInputManifest | None,
@@ -1257,6 +1276,28 @@ def evaluate_returned_zarr(
     store, which makes failures and unsupported cases unconditionally fail
     open to ``keep-full``.
     """
+    logger.debug("Evaluating %s against %d canonical inputs with %d identity workers",
+                 zarr_root, len(canonical_inputs.inputs) if canonical_inputs else 0,
+                 identity_workers)
+    decision = _evaluate_returned_zarr(
+        zarr_root, canonical_inputs, identity_provider=identity_provider,
+        identity_workers=identity_workers, storage_roots=storage_roots)
+    logger.debug("Decision for %s: outcome=%s, reason=%s, basis=%s, matched inputs=%d",
+                 decision.store_path, decision.outcome, decision.reason,
+                 decision.decision_basis, len(decision.matched_inputs))
+    if decision.outcome == "keep-full" and decision.reason.startswith(_FALLBACK_REASONS):
+        logger.warning("Keeping %s full: %s", decision.store_path, decision.reason)
+    return decision
+
+
+def _evaluate_returned_zarr(
+    zarr_root: str | Path,
+    canonical_inputs: CanonicalInputManifest | None,
+    *,
+    identity_provider: IsccBioIdentityProvider | None = None,
+    identity_workers: int = 1,
+    storage_roots: dict[str, Path] | None = None,
+) -> ReturnedZarrDecision:
     if (
         isinstance(identity_workers, bool)
         or not isinstance(identity_workers, int)
