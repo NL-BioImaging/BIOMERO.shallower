@@ -55,6 +55,16 @@ The helper does not claim durability on filesystems that ignore these primitives
 Never remove a prune journal to free space: it may contain the only remaining
 copy of a pre-commit array.
 
+A shallow result is deliberately not a valid OME-Zarr until it is
+reconstructed: the duplicate arrays and the `multiscales` metadata are removed,
+so generic readers fail instead of showing pixels. Keeping the metadata and
+dropping only the chunk files would pass validators, but readers would silently
+return blank images and a shallow result could be treated as a canonical input.
+That variant is deferred to the RFC-8 work in
+[BIOMERO.shallower#36](https://github.com/NL-BioImaging/BIOMERO.shallower/issues/36).
+See [Why BIOMERO shallows results](https://nl-bioimaging.github.io/NL-BIOMERO/developer/biomero-shallow-zarr.html)
+for the rationale.
+
 ## Slurm events and detached resume
 
 The `_SLURM_Remote_Shallower` task records its configured image/version and
