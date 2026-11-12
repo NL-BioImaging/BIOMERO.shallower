@@ -10,33 +10,21 @@ Required reading first: the
 They cover principles, logging, branches and pull requests, and agent
 guidance; they are not repeated here.
 
-## Why shallowing exists
+## Design intent
 
-Reusable workflows (Bilayers, BIAFLOWS, Fractal tasks) get one input folder and
-one output folder, and must write an output Zarr that is valid on its own, so
-it usually repeats its input pixels (for example the image plus a new
-`labels/` group). BIOMERO orchestrates the whole route: it supplies the input
-folder, collects the output and stores it, so it can avoid storing those
-duplicates again, which becomes costly for large plates and repeated runs.
+Before changing what is shallowed or how it is decided, read the section
+"Why BIOMERO shallows results" in NL-BIOMERO
+[`docs/developer/biomero-shallow-zarr.md`](https://github.com/NL-BioImaging/NL-BIOMERO/blob/master/docs/developer/biomero-shallow-zarr.md)
+(published under the NL-BIOMERO documentation, Developer section). Rules for
+agents:
 
-- Shallowing applies only to BIOMERO's own copies in managed storage (the
-  importer's and analyzer's `.processed`/`.analyzed` data), never to original
-  acquisition data. Workflows must not be expected to clean up their output.
-- A shallow result stays usable: OMERO and the viewer reconstruct it through a
-  link to the canonical pixels, and a restore must be able to rebuild the full
-  Zarr for a new workflow or for export to an archive outside BIOMERO.
-- Comparing full-resolution pixels in the result path more than doubled
-  analysis time, which users would wait for. Comparing the smallest shared
-  pyramid level is therefore a deliberate performance trade-off, accepted
-  because only BIOMERO-produced copies are pruned and workflows should not
-  change their input pixels. Do not replace it with full-resolution comparison
-  in the result path without a decision from the maintainers; exact checks
-  belong in background work (see the sampling/audit and identity-cache issues).
-- A workflow may declare that its outputs are source-linked (its RO-Crate run
-  output, or later its descriptor or the per-workflow admin setting); BIOMERO
-  treats that declaration as permission to shallow.
-- The design is interim: OME-NGFF RFC-8 (collections) is expected to change
-  how linked Zarr data is represented.
+- Shallow only BIOMERO's own copies in managed storage, never original
+  acquisition data.
+- Keep the smallest-compatible-pyramid-level comparison in the result path. Do
+  not replace it with full-resolution comparison there without a maintainer
+  decision; exact checks belong in background work.
+- Keep shallow results viewable and reconstructable; a change that breaks
+  reconstruction or OMERO registration is a regression.
 
 ## Purpose and boundaries
 
