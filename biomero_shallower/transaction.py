@@ -51,6 +51,7 @@ def remove_rollback(rollback):
             shutil.rmtree(child)
         else:
             child.unlink()
+    sync_directory(rollback)
     (rollback / "journal.json").unlink(missing_ok=True)
     rollback.rmdir()
 

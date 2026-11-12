@@ -82,6 +82,48 @@ def test_interrupted_cleanup_is_recovered_automatically(tmp_path):
     assert not rollback.exists()
 
 
+def _committed_rollback(tmp_path):
+    root = tmp_path / 'result.zarr'
+    root.mkdir()
+    rollback = tmp_path / '.result.zarr.biomero-prune-test'
+    (rollback / '0').mkdir(parents=True)
+    (rollback / '0' / 'chunk').write_bytes(b'x')
+    return root, rollback
+
+
+@pytest.mark.parametrize('interrupted', ['unlink', 'rmdir'])
+def test_cleanup_interrupted_at_journal_or_folder_converges(tmp_path, interrupted):
+    root, rollback = _committed_rollback(tmp_path)
+    (rollback / 'journal.json').write_text(json.dumps(
+        {'schema': 1, 'committed': True, 'moves': ['0'], 'attrs': {}}))
+    real = getattr(Path, interrupted)
+
+    def interrupt(self, *args, **kwargs):
+        if self == rollback / 'journal.json' or self == rollback:
+            raise KeyboardInterrupt
+        return real(self, *args, **kwargs)
+
+    with patch.object(Path, interrupted, interrupt):
+        with pytest.raises(KeyboardInterrupt):
+            remove_rollback(rollback)
+    recover(root)
+    recover(root)
+    assert not rollback.exists()
+
+
+def test_interrupted_uncommitted_recovery_restores_arrays_on_rerun(tmp_path):
+    root, rollback = _committed_rollback(tmp_path)
+    (rollback / 'journal.json').write_text(json.dumps(
+        {'schema': 1, 'committed': False, 'moves': ['0'], 'attrs': {}}))
+    with patch('biomero_shallower.transaction.remove_rollback', side_effect=KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            recover(root)
+    assert (root / '0' / 'chunk').read_bytes() == b'x'
+    recover(root)
+    assert (root / '0' / 'chunk').read_bytes() == b'x'
+    assert not rollback.exists()
+
+
 def test_production_does_not_measure_recursive_bytes(tmp_path):
     root = tmp_path / 'result.zarr'
     _make_image(root, labels=('cells',))
