@@ -2,10 +2,13 @@ from importlib.metadata import version
 import subprocess
 import sys
 
+import pytest
+
 from biomero_shallower import __version__
 from biomero_shallower.capabilities import (
     MIGRATIONS,
     capabilities,
+    helper_image,
     require_migrations,
 )
 
@@ -60,3 +63,21 @@ def test_container_labels_match_python_capabilities():
         + ",".join(MIGRATIONS)
         + '"'
     ) in dockerfile
+
+
+@pytest.mark.parametrize("version, tag", [
+    ("0.1.0", "0.1.0"),
+    ("1.2.3", "1.2.3"),
+    ("0.1.0b9", "0.1.0-beta.9"),
+    ("0.1.0rc1", "0.1.0-rc.1"),
+    ("0.1.0a2", "0.1.0-alpha.2"),
+])
+def test_helper_image_maps_pep440_to_published_tag(version, tag):
+    assert helper_image(version) == f"cellularimagingcf/biomero-shallower:{tag}"
+
+
+@pytest.mark.parametrize("version", ["0.0.dev0", "0.1.0b9.dev3+g1234", "0.1.0.post1"])
+def test_helper_image_rejects_unpublished_versions(version):
+    with pytest.raises(ValueError, match="No published helper image"):
+        helper_image(version)
+
