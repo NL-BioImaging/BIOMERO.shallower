@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -18,6 +19,8 @@ from .operations import ADAPTERS, locked, normalize, validate_report
 from .result_zarr import discover_ngff_nodes, find_returned_zarr_stores
 from .transaction import recover, write_json
 
+logger = logging.getLogger(__name__)
+
 
 def load_manifest(path):
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -30,7 +33,10 @@ def normalize_tree(root, manifest, *, image, task_id, workers=1,
                    recover_only=False):
     root = Path(root)
     receipts = []
-    for store in find_returned_zarr_stores(root):
+    stores = find_returned_zarr_stores(root)
+    logger.info(f"Found {len(stores)} returned Zarr stores under {root} "
+                f"(recover_only={recover_only})")
+    for store in stores:
         if recover_only:
             with locked(store):
                 recover(store)
@@ -82,6 +88,9 @@ def main(argv=None):
         if name == "normalize-tree":
             command.add_argument("--recover-only", action="store_true")
     args = parser.parse_args(argv)
+    # Library modules never configure logging; do it here only if the caller has not.
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         if args.command == "health":
             from .capabilities import capabilities

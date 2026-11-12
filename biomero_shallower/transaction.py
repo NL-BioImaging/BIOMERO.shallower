@@ -2,9 +2,12 @@
 
 import base64
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
+
+logger = logging.getLogger(__name__)
 
 
 def write_json(path, value):
@@ -44,6 +47,7 @@ def remove_rollback(rollback):
     An interruption then leaves a journal that `recover` can finish.
     """
     rollback = Path(rollback)
+    logger.info(f"Removing rollback folder {rollback}")
     for child in rollback.iterdir():
         if child.name == "journal.json":
             continue
@@ -66,12 +70,15 @@ def recover(root):
         if not journal.exists():
             # An empty directory can remain if killed before intent was saved.
             if not list(rollback.iterdir()):
+                logger.info(f"Removing empty rollback folder {rollback}")
                 rollback.rmdir()
                 continue
             raise ValueError("Incomplete recovery journal; manual recovery required")
         state = json.loads(journal.read_text(encoding="utf-8"))
         if state.get("schema") != 1:
             raise ValueError("Unknown recovery journal version")
+        committed, moves = state["committed"], state["moves"]
+        logger.info(f"Recovering {root} from {rollback}: committed={committed}, moves={len(moves)}")
         if not state["committed"]:
             for relative in reversed(state["moves"]):
                 relative = _safe_node_path(relative)
@@ -83,6 +90,7 @@ def recover(root):
                     os.replace(target, source)
             for relative, data in state["attrs"].items():
                 _write_bytes(root / _safe_node_path(relative), base64.b64decode(data))
+            logger.info(f"Restored {len(moves)} arrays and {len(state['attrs'])} attribute files in {root}")
             for name in (".biomero-shallow.json", ".biomero-shallow-report.json"):
                 (root / name).unlink(missing_ok=True)
         remove_rollback(rollback)

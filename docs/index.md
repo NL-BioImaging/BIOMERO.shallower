@@ -122,6 +122,11 @@ Python callers get the image for the installed package version from
 `biomero_shallower.capabilities.helper_image()`; see
 [Releases](releases.md) for the tag scheme.
 
+Progress and decisions are logged at INFO to stderr by the command line
+tool (it configures logging only if the caller has not); standard output
+remains the single JSON document. Callers read the report file, not the
+log, for results.
+
 The image runs as UID/GID `10001:10001`. Bind the returned result directory
 writable and the canonical-input manifest read-only. The helper does not need
 access to transferred input copies or original managed canonical stores. Writable results require
