@@ -27,7 +27,7 @@ biomero-shallower health
 ```
 
 The package requires published receipt-capable schema contracts,
-`biomero-schema>=0.3.0b3,<0.4`. The container pins the complete CPU identity
+`biomero-schema>=0.3.0b4,<0.4`. The container pins the complete CPU identity
 runtime in `requirements.lock`.
 
 ## Shallow one result

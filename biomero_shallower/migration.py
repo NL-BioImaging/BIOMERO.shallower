@@ -39,6 +39,7 @@ from biomero_schema.zarr import (
     ShallowLabelBinding,
     ShallowLabelNode,
     ShallowManifest,
+    ShallowNodePointer,
     ShallowPlateReference,
     ShallowZarrReference,
     ZarrLabelComponent,
@@ -613,6 +614,8 @@ def migrate_shallow_store_v1(
         biomero = dict(biomero)
         biomero.pop("model")
         biomero["format"] = manifest.format
+        # Fail before writing anything if the migrated pointer is not current.
+        ShallowNodePointer.from_dict(biomero)
         attrs = dict(attrs)
         attrs["biomero"] = biomero
         attrs_updates[attrs_path] = attrs

@@ -28,6 +28,7 @@ from typing import Any, Callable
 from biomero_schema.shallower import SHALLOW_OPERATION_REPORT, ShallowOperationReport
 from biomero_schema.zarr import (
     SHALLOW_COLLECTION_MANIFEST, CanonicalInput, CanonicalInputManifest, ShallowManifest,
+    ShallowNodePointer,
 )
 
 from . import __version__
@@ -276,9 +277,28 @@ def _check_shallow_image_structure(root: Path, image_node: Any) -> None:
             to the shallow manifest.
     """
     attrs = read_attrs(root / image_node.node_path)
-    if ("multiscales" in attrs
-            or attrs.get("biomero", {}).get("manifest") != SHALLOW_COLLECTION_MANIFEST):
+    if "multiscales" in attrs or not _is_shallow_node_pointer(attrs.get("biomero")):
         raise ValueError("Invalid shallow image structure")
+
+
+def _is_shallow_node_pointer(pointer: Any) -> bool:
+    """
+    Return whether a node's ``biomero`` attribute is a valid shallow node pointer.
+
+    A missing attribute or one that is not a valid current-format pointer
+    (including the schema-1 ``model`` pointer) is not a pointer.
+
+    Args:
+        pointer (Any): The node's ``biomero`` attribute, or None if missing.
+
+    Returns:
+        bool: True if ``pointer`` validates as a `ShallowNodePointer`.
+    """
+    try:
+        ShallowNodePointer.from_dict(pointer)
+    except ValueError:  # pydantic's ValidationError is a ValueError
+        return False
+    return True
 
 
 def _check_label_inventory(
