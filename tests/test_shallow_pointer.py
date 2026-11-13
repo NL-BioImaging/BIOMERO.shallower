@@ -40,6 +40,14 @@ INVALID_POINTERS = {
         "model": "rfc8-shallow-copy", "manifest": ".biomero-shallow.json",
         "workflowId": "WORKFLOW",
     },
+    "extra field": {
+        "format": "biomero-shallow-zarr", "manifest": ".biomero-shallow.json",
+        "workflowId": "WORKFLOW", "x": 1,
+    },
+    "wrong format": {
+        "format": "other", "manifest": ".biomero-shallow.json",
+        "workflowId": "WORKFLOW",
+    },
     "bad workflow id": {
         "format": "biomero-shallow-zarr", "manifest": ".biomero-shallow.json",
         "workflowId": "not-a-uuid",
