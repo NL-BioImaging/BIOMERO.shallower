@@ -62,7 +62,7 @@ dropping only the chunk files would pass validators, but readers would silently
 return blank images and a shallow result could be treated as a canonical input.
 That variant is deferred to the RFC-8 work in
 [BIOMERO.shallower#36](https://github.com/NL-BioImaging/BIOMERO.shallower/issues/36).
-See [Why BIOMERO shallows results](https://nl-bioimaging.github.io/NL-BIOMERO/developer/biomero-shallow-zarr.html)
+See [Why BIOMERO shallows results](https://nl-bioimaging.github.io/NL-BIOMERO/master/developer/biomero-shallow-zarr.html#why-biomero-shallows-results)
 for the rationale.
 
 ## Slurm events and detached resume

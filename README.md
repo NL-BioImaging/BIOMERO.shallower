@@ -107,7 +107,7 @@ and keeps a sibling backup. Do not run it during an active transfer or import.
 For stores registered in OMERO, use the administrator script **BIOMERO Migrate
 Shallow Storage** so the filesystem and OMERO references are updated together.
 
-See the [reconstruction guide](https://nl-bioimaging.github.io/NL-BIOMERO/developer/biomero-shallow-zarr.html#reconstruct-shallow-zarr-on-disk)
+See the [reconstruction guide](https://nl-bioimaging.github.io/NL-BIOMERO/master/developer/biomero-shallow-zarr.html#reconstruct-shallow-zarr-on-disk)
 for details. A shallow result itself is not a self-contained OME-Zarr for
 generic readers; the reconstructed output is.
 
