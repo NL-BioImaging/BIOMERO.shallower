@@ -38,6 +38,7 @@ from biomero_schema.zarr import (
     ShallowLabelBinding,
     ShallowLabelNode,
     ShallowManifest,
+    ShallowNodePointer,
 )
 
 from .discovery import NgffNode, discover_ngff_nodes
@@ -638,11 +639,7 @@ def _write_shallow_metadata(
         image_directory = node_directory(root, image_node.node_path)
         attrs = read_attrs(metadata_path(image_directory).parent)
         attrs.pop("multiscales", None)
-        attrs["biomero"] = {
-            "format": manifest.format,
-            "manifest": SHALLOW_COLLECTION_MANIFEST,
-            "workflowId": str(manifest.workflow_id),
-        }
+        attrs["biomero"] = ShallowNodePointer.from_manifest(manifest).to_dict()
         write_attrs(image_directory, attrs)
     write_json(root / SHALLOW_COLLECTION_MANIFEST, manifest.to_dict())
 

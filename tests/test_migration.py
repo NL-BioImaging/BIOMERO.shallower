@@ -23,6 +23,7 @@ from biomero_schema.shallower import SHALLOW_OPERATION_REPORT
 from biomero_schema.zarr import (
     SHALLOW_COLLECTION_MANIFEST,
     ShallowManifest,
+    ShallowNodePointer,
     ShallowPlateReference,
     ShallowZarrReference,
     ZarrLabelComponent,
@@ -130,12 +131,28 @@ def test_migrates_schema_1_store_and_keeps_rollback_copy(tmp_path):
     attrs = json.loads((root / ".zattrs").read_text(encoding="utf-8"))
     assert attrs["biomero"]["format"] == "biomero-shallow-zarr"
     assert "model" not in attrs["biomero"]
+    ShallowNodePointer.from_dict(attrs["biomero"])
     assert (
         result.backup_path / SHALLOW_COLLECTION_MANIFEST
     ).read_bytes() == old_manifest
     assert (
         result.backup_path / SHALLOW_OPERATION_REPORT
     ).read_bytes() == old_report
+
+
+def test_migration_rejects_legacy_pointer_that_would_not_validate(tmp_path):
+    root, _canonical, _legacy = _legacy_store(tmp_path)
+    attrs_path = root / ".zattrs"
+    attrs = json.loads(attrs_path.read_text(encoding="utf-8"))
+    attrs["biomero"]["workflowId"] = "not-a-uuid"
+    attrs_path.write_text(json.dumps(attrs), encoding="utf-8")
+    backup = tmp_path / "schema-backup"
+
+    with pytest.raises(ValueError):
+        migrate_shallow_store_v1(root, backup_path=backup)
+
+    assert json.loads(attrs_path.read_text(encoding="utf-8")) == attrs
+    assert not backup.exists()
 
 
 def test_rebinds_manifest_and_report_to_one_stable_canonical_store(tmp_path):
